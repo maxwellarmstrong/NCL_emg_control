@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Neuromotion · Acquisition lab</title>
+<script>
+// A directly opened HTML file can show the design and launch instructions, but
+// acquisition needs the local HTTP server. File URLs cannot load the module graph.
+for (const name of ['style.css', 'storage.css']) {
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = (location.protocol === 'file:' ? './' : '/assets/') + name;
+  document.head.append(link);
+}
+</script></head>
+<body>
+<header class="topbar"><a class="brand" href="/">N<span>↗</span> <b>NEUROMOTION</b><small>RESEARCH WORKSPACE</small></a><nav><a class="selected" href="#live">Acquisition</a><a href="#recordings">Recordings</a><a href="/arm/" target="_blank" rel="noopener">Arm simulator ↗</a></nav><span class="local"><i></i> LOCAL ONLY</span></header>
+<main>
+<div class="intro"><div><div class="eyebrow">01 / DATA ACQUISITION</div><h1>From muscle signal<br>to finger motion.</h1><p>Record eight EMG channels alongside visual hand labels.<br>Keep the raw signal. Make every recording reproducible.</p></div><div class="session-card"><span>WORKSPACE STATUS</span><strong id="state">Ready to connect</strong><small id="server">Checking local recorder…</small><div class="step-track"><b>01 Connect</b><b>02 Label</b><b>03 Record</b></div></div></div>
+<div id="notice" class="notice" role="status">Cyton USB streams at 250 Hz. The 2,000 Hz profile is available for synthetic development; it requires a different acquisition path for real data.</div>
+<section class="card setup" aria-label="Acquisition settings"><div class="section-top"><div><span class="eyebrow">ACQUISITION SETUP</span><h2>A new recording starts here</h2></div><span id="source-pill" class="pill">NO SOURCE</span></div>
+<div class="fields"><label>Input source<select id="source"><option value="cyton">OpenBCI Cyton · USB</option><option value="synthetic">Synthetic demo</option></select></label><label>Sampling rate<select id="rate"><option value="250">250 Hz · 8 channels</option><option value="2000">2,000 Hz · synthetic only</option></select></label><label>Electrode wiring<select id="wiring"><option value="bipolar">Bipolar pairs</option><option value="common">Shared reference</option></select></label><label>Mains notch<select id="mains"><option value="60">60 Hz</option><option value="50">50 Hz</option><option value="0">Off</option></select></label><label>Participant code<input id="participant" value="p01" maxlength="80" autocomplete="off"></label><label>Recording split<select id="split"><option value="train">Training</option><option value="val">Validation</option><option value="test">Held-out test</option></select></label></div>
+<div class="actions"><button id="connect" class="dark">Connect Cyton</button><span id="source-status">Connect the dongle, or choose Synthetic demo to explore.</span><span class="right-meta" id="filter-label">20–100 Hz · causal band-pass</span></div></section>
+<section id="live" class="workspace"><div class="left-stack"><div class="card signal-card"><div class="section-top"><div><span class="eyebrow">LIVE SIGNAL</span><h2>Eight channels. One timeline.</h2></div><span class="legend"><i></i> FILTERED µV</span></div><div class="stats"><div><span>Samples / sec</span><b id="pps">—</b></div><div><span>Packet gaps</span><b id="gaps">0</b></div><div><span>Label coverage</span><b id="coverage">—</b></div><div><span>Recorded</span><b id="elapsed">00:00</b></div></div><canvas id="signal" aria-label="Eight-channel filtered EMG waveforms"></canvas><div class="plot-footer"><span>Last 3 seconds · independent amplitude scales</span><span id="clock-quality">Sample clock waiting</span></div></div>
+<div class="card protocol"><div class="section-top"><div><span class="eyebrow">GUIDED COVERAGE</span><h2 id="cue">Move freely, or follow a cue</h2></div><button id="prompts" class="light">Start prompts</button></div><p>Rest, individual fingers, and combinations. Cues are saved as events; only valid visual measurements become training labels.</p><div id="cue-progress"><div></div></div></div>
+</div><div class="right-stack"><div class="card camera-card"><div class="section-top"><div><span class="eyebrow">VISUAL SUPERVISION</span><h2>Your hand, in sync</h2></div><span id="vision-pill" class="pill">OFFLINE</span></div><div class="camera-view"><video id="video" playsinline muted></video><canvas id="overlay"></canvas><div id="camera-empty"><div class="hand-icon">⌁</div><strong>A second view of the signal</strong><span>Enable your camera for hand landmarks.<br>Video is not saved.</span></div></div><div class="camera-controls"><button id="camera" class="light">Enable camera</button><label>Hand<select id="hand"><option>Right</option><option>Left</option></select></label></div><div class="calibration"><button id="open-cal" disabled>Capture open hand</button><button id="closed-cal" disabled>Capture closed hand</button></div><p id="vision-status">Hold each pose steady for a second. Calibrate both poses before collecting visual labels.</p></div>
+<div class="card fingers"><div class="section-top"><div><span class="eyebrow">FINGER FLEXION</span><h2>Motion, measured</h2></div><span class="mini-legend">● Vision <em>● CNN</em></span></div><div id="finger-bars"></div><label class="prediction-toggle"><input type="checkbox" id="predict"> Compare a trained CNN</label><p id="model-status">Checking for a local model…</p></div></div></section>
+<section class="card recording"><div><span class="eyebrow">RECORDING CONTROL</span><h2 id="record-title">Ready when your signal is.</h2><p id="save-status">Raw EMG, timestamps, landmarks and settings are saved locally. No camera video.</p></div><div class="record-options"><label>Label delay (ms)<input id="delay" type="number" value="0" min="-500" max="500" step="5"></label><button id="record" class="record-btn" disabled><span>●</span> Start recording</button></div></section>
+<details class="details"><summary>Timing, filtering and label quality</summary><p>EMG time is reconstructed from the sample counter on the browser’s monotonic timeline. Camera labels use frame-callback timestamps. These are estimates, not hardware synchronization. Positive label delay aligns an EMG window with a later visual label; determine this using training recordings only.</p><p>The default waveform filter is causal Butterworth SOS, with a narrow optional mains notch. No common-average subtraction is applied. The first second after startup or a packet gap is excluded from training. Digital filtering cannot restore EMG bandwidth above this hardware’s Nyquist limit.</p><p>MediaPipe’s handedness score is not a landmark confidence score. Labels are rejected for missing or ambiguous hands, frame-edge clipping, degenerate geometry, implausible jumps, and missing pose calibration. Monocular flexion remains an estimate.</p></details>
+<section id="recordings"><div class="section-top"><div><span class="eyebrow">SESSION LIBRARY</span><h2>Keep experiments separate.</h2></div><button id="refresh" class="light">Refresh</button></div><p class="muted">Assign whole recordings to training, validation, or test. Never randomly split overlapping windows.</p>
+<div class="storage-box"><strong>Saved on this computer</strong><code id="storage-path">Checking recording directory…</code><p>Saving writes directly to this folder. Download ZIP creates a separate browser download; the original stays here. Archives include file checksums for verification.</p><div class="storage-actions"><a id="backup-all" href="/api/export">Download completed recordings</a><button id="import-placement" class="light">Import placement-lab JSON</button><input id="placement-file" type="file" accept=".json,application/json" hidden></div><small>Placement imports retain movement cues and channel mappings. They do not become camera-measured finger labels. Import uses the participant code above.</small><p id="import-status" role="status"></p></div>
+<div id="session-list"><p>No recordings yet.</p></div></section>
+<footer><span>NEUROMOTION / EXPERIMENTAL TOOLING</span><span>200 ms windows · 50 ms updates · five finger targets</span></footer>
+</main>
+<script>
+function showLaunchMessage(filePreview) {
+  document.getElementById('state').textContent = filePreview ? 'File preview' : 'App could not start';
+  document.getElementById('server').textContent = 'Use the local recorder to connect and save data.';
+  const notice = document.getElementById('notice');
+  notice.replaceChildren();
+  const title = document.createElement('strong');
+  title.textContent = filePreview ? 'This is an HTML preview. ' : 'The app files could not load. ';
+  const link = document.createElement('a');
+  link.href = 'http://localhost:8081/';
+  link.textContent = 'Open the running acquisition app ↗';
+  const command = document.createElement('code');
+  command.textContent = 'powershell -File scripts/start-lab.ps1';
+  notice.append(title, link, document.createElement('br'),
+    'If the app is not running, start it from the project folder: ', command);
+  document.querySelectorAll('button, input, select').forEach(control => control.disabled = true);
+  document.getElementById('storage-path').textContent = 'The running app will show your local recording directory.';
+  document.getElementById('backup-all').removeAttribute('href');
+  document.getElementById('backup-all').setAttribute('aria-disabled', 'true');
+  if (filePreview) {
+    document.querySelector('.brand').href = link.href;
+    document.querySelectorAll('nav a').forEach(item => {
+      item.href = new URL(item.getAttribute('href'), link.href).href;
+    });
+  }
+}
+if (location.protocol === 'file:') {
+  showLaunchMessage(true);
+} else {
+  const app = document.createElement('script');
+  app.type = 'module';
+  app.src = '/assets/app.js?v=3';
+  app.onerror = () => showLaunchMessage(false);
+  document.body.append(app);
+}
+</script></body></html>

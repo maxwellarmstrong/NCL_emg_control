@@ -1,0 +1,17 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Hand tracker smoke test</title>
+<body><h1>Hand tracker smoke test</h1><p>Uses a blank generated frame. No camera access.</p><button id="run">Load model and inspect blank frame</button><pre id="status">Ready</pre>
+<script type="module">
+document.getElementById('run').onclick=()=>{
+ const status=document.getElementById('status');status.textContent='Loading…';
+ const worker=new Worker('/assets/vision-worker.js?v=2');
+ worker.onerror=e=>status.textContent='ERROR: '+e.message;
+ worker.onmessage=async({data})=>{
+  if(data.type==='ready'){
+   const canvas=new OffscreenCanvas(320,240);canvas.getContext('2d').fillRect(0,0,320,240);
+   const bitmap=await createImageBitmap(canvas);worker.postMessage({type:'frame',bitmap,t_ms:performance.now(),media_time_s:0},[bitmap]);
+  }else if(data.type==='result'){status.textContent='PASS: model loaded; blank frame detected '+data.landmarks.length+' hands.';worker.terminate();}
+  else if(data.type==='error'){status.textContent='ERROR: '+data.message;worker.terminate();}
+ };
+ worker.postMessage({type:'init'});
+};
+</script></body></html>
