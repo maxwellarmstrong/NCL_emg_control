@@ -2,23 +2,22 @@
 import argparse
 import copy
 import json
-import os
 import threading
 import uuid
-import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .signal import FilterConfig
+from .storage import data_directory, create_archive, completed_sessions
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA = Path(os.environ.get("EMG_DATA_DIR", ROOT / "data" / "sessions"))
+DATA = data_directory()
 app = FastAPI(title="EMG Acquisition Lab", version="0.1.0")
 lock = threading.RLock()
 active = {}
@@ -134,7 +133,7 @@ def save_metadata(path, meta):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "data_directory": str(DATA), "camera_model_ready": (ROOT / "models/hand_landmarker.task").exists(),
+    return {"ok": True, "storage_api_version": 1, "data_directory": str(DATA), "camera_model_ready": (ROOT / "models/hand_landmarker.task").exists(),
             "mediapipe_ready": (ROOT / "node_modules/@mediapipe/tasks-vision/vision_bundle.mjs").exists()}
 
 
@@ -158,7 +157,7 @@ def create_session(config: SessionConfig):
     path = session_path(session_id)
     path.mkdir(parents=True)
     meta = {"schema_version": 1, "id": session_id, "created_utc": datetime.now(timezone.utc).isoformat(),
-            "status": "recording", "config": config.model_dump(), "filter": profile,
+            "status": "recording", "recording_kind": "finger_motion", "config": config.model_dump(), "filter": profile,
             "timestamps": "Browser monotonic milliseconds. EMG sample-count reconstructed; camera callback time. Not hardware synchronized.",
             "video_saved": False, "counts": {"emg": 0, "vision": 0, "events": 0}, "last_batch_id": -1}
     with lock:
@@ -253,7 +252,9 @@ def list_sessions():
             meta = json.loads(p.read_text(encoding="utf-8"))
             if meta["status"] == "recording" and meta["id"] not in active:
                 meta["status"] = "interrupted"
-            sessions.append({k: meta[k] for k in ("id", "created_utc", "status", "config", "counts")})
+            sessions.append({**{k: meta[k] for k in ("id", "created_utc", "status", "config", "counts")},
+                             "recording_kind": meta.get("recording_kind", "finger_motion"),
+                             "placement": meta.get("placement")})
     return sessions
 
 
@@ -264,16 +265,51 @@ def export_session(session_id: str):
         raise HTTPException(404, "Session not found")
     if session_id in active:
         raise HTTPException(409, "Finish recording before export")
-    # Spool to disk for long sessions rather than keeping a whole recording in RAM.
+    return archive_response([path], f"emg-{session_id}.zip")
+
+
+def archive_response(folders, filename):
+    # Stream to a temporary ZIP. The returned artifact contains SHA-256 hashes.
     import tempfile
     from starlette.background import BackgroundTask
-    handle = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
-    handle.close()
-    with zipfile.ZipFile(handle.name, "w", zipfile.ZIP_DEFLATED) as z:
-        for name in ("metadata.json", "emg.jsonl", "vision.jsonl", "events.jsonl"):
-            if (path / name).exists():
-                z.write(path / name, arcname=f"{session_id}/{name}")
-    return FileResponse(handle.name, filename=f"emg-{session_id}.zip", background=BackgroundTask(Path(handle.name).unlink))
+    temporary = tempfile.TemporaryDirectory(prefix='emg-export-')
+    output = Path(temporary.name) / 'archive.zip'
+    try:
+        create_archive(folders, output)
+    except Exception:
+        temporary.cleanup()
+        raise
+    return FileResponse(output, filename=filename, background=BackgroundTask(temporary.cleanup))
+
+
+@app.get('/api/export')
+def export_completed():
+    with lock:
+        folders = [p for p in completed_sessions(DATA) if p.name not in active]
+    if not folders:
+        raise HTTPException(404, 'No completed recordings to back up')
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    return archive_response(folders, f'emg-archive-{stamp}.zip')
+
+
+@app.post('/api/import/placement')
+async def import_placement(request: Request, participant: str = Query(default='placement-import', min_length=1, max_length=80)):
+    from .placement import import_document, MAX_IMPORT_BYTES
+    from starlette.concurrency import run_in_threadpool
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_IMPORT_BYTES:
+            raise HTTPException(413, 'Placement export exceeds 64 MiB')
+        body.extend(chunk)
+    def save():
+        with lock:
+            if active:
+                raise HTTPException(409, 'Finish active recordings before importing')
+            try:
+                return import_document(bytes(body), DATA, participant)
+            except ValueError as e:
+                raise HTTPException(422, str(e))
+    return await run_in_threadpool(save)
 
 
 @app.get("/api/model")
@@ -285,6 +321,7 @@ class Prediction(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
     sample_rate_hz: int
     mains_hz: int
+    wiring: str = 'bipolar'
     filtered_uv: list[list[float]] = Field(min_length=50, max_length=400)
 
 
@@ -296,6 +333,8 @@ def predict(request: Prediction):
     from .model import load_model
     import torch
     model, meta = load_model(path)
+    if meta.get('wiring') != request.wiring:
+        raise HTTPException(409, 'Model electrode wiring differs or is unknown; rebuild the dataset and retrain for this montage')
     from dataclasses import asdict
     try:
         expected = FilterConfig.for_rate(request.sample_rate_hz, request.mains_hz)
@@ -326,10 +365,13 @@ app.mount("/models", StaticFiles(directory=ROOT / "models", check_dir=False), na
 
 
 def main():
+    global DATA
     import uvicorn
     p = argparse.ArgumentParser()
     p.add_argument("--port", type=int, default=8081)
+    p.add_argument("--data-dir", type=Path, help='Recording directory; otherwise EMG_DATA_DIR or data/sessions')
     args = p.parse_args()
+    DATA = data_directory(args.data_dir)
     uvicorn.run(app, host="127.0.0.1", port=args.port)
 
 

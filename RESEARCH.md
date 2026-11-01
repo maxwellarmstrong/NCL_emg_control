@@ -108,6 +108,11 @@ and an interrupted server session is excluded from training and cannot be resume
 
 ## Data and synchronization
 
+For configurable storage, verified backup/restore and importing existing
+placement-lab exports, see [storage and repository integration](docs/INTEGRATION.md).
+The acquisition UI shows its actual save path. Placement imports remain cue-labelled
+trials and are excluded from the camera-supervised dataset builder.
+
 Each recording is stored in `data/sessions/<uuid>/`:
 
 | File | Content |
@@ -159,6 +164,10 @@ original simulator's rectified low-pass control envelope.
 These are numerically validated starting profiles, **not a demonstrated optimum**.
 The 250 Hz hardware has a 125 Hz Nyquist limit, so a 450 Hz digital cutoff is invalid.
 Digital filtering cannot undo aliasing or recover bandwidth the acquisition lost.
+The ADC's own response is narrower than Nyquist: at nominal 250 SPS the ADS1299
+has approximately 65 Hz −3 dB bandwidth. Thus the 20–100 Hz software profile is
+not a flat 20–100 Hz hardware passband. The filter report now includes nominal
+ADC-plus-software gains. [TI ADS1299 datasheet](https://www.ti.com/lit/ds/symlink/ads1299.pdf)
 The notch also removes some real EMG energy; disable it when measurements justify
 that choice. Broad or unnecessary harmonic notches are not enabled.
 
@@ -195,6 +204,9 @@ waveform length and zero crossings as initial features.
 
 The app discovers `artifacts/model.pt` on reload and enables **Compare a trained
 CNN**. It validates the full filter profile and window shape before inference.
+It also checks electrode wiring; datasets with mixed shared-reference/bipolar
+wiring are rejected. Rebuild older datasets and retrain checkpoints that lack
+wiring metadata. This does not replace controlling electrode position and channel order.
 Live requests are throttled to 10 Hz; the offline training windows use 50 ms hops.
 CNN comparison is currently a display, not an actuator command.
 

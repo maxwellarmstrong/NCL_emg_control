@@ -4,6 +4,7 @@ import {CytonParser, SOSFilter, FINGERS, fingerAngles, calibratedFlexion, synthe
 const $ = id => document.getElementById(id);
 const settings = ['source','rate','wiring','mains'];
 let profile, filter, parser, serial, running = false, sourceStarted = 0, generated = 0;
+let storageReady = false;
 let sampleCount = 0, packetGaps = 0, lastIndex = null, settleUntil = 0, lastSampleTime = 0;
 let plot = [], filteredWindow = [], latestVision = null, prediction = null, predictionBusy = false;
 let cameraStream, worker, cameraReady = false, frameBusy = false, frameHandle, frameFallback;
@@ -31,6 +32,7 @@ function updateControls() {
   $('connect').textContent=running?'Disconnect source':$('source').value==='cyton'?'Connect Cyton':'Start synthetic stream';
   $('connect').disabled=!!sessionId;
   $('camera').disabled=!!sessionId;
+  $('import-placement').disabled=!!sessionId||!storageReady;
   if(sessionId) $('open-cal').disabled=$('closed-cal').disabled=true;
   $('record').disabled=!running&&!sessionId;
   $('record').innerHTML=sessionId?(recording?'■ Finish & save recording':'Retry save & finish'):'<span>●</span> Start recording';
@@ -274,12 +276,26 @@ async function refreshSessions(){
   for(const row of rows){
     const div=document.createElement('div');div.className='session-row';
     const identity=document.createElement('span');identity.textContent=row.config.participant;
-    const small=document.createElement('small');small.textContent=new Date(row.created_utc).toLocaleString();identity.append(small);div.append(identity);
-    for(const text of [`${row.config.source==='synthetic'?'Synthetic':'Cyton'} · ${row.config.sample_rate_hz} Hz`,`${row.config.split.toUpperCase()} · ${row.status}`,`${row.counts.emg.toLocaleString()} samples`]){const el=document.createElement('span');el.textContent=text;if(text.startsWith('Synthetic'))el.className='synthetic';div.append(el);}
+    const placement=row.recording_kind==='placement';
+    const small=document.createElement('small');small.textContent=placement?`Placement · ${row.placement?.movement??'trial'} · ${row.config.active_channels} active channels`:new Date(row.created_utc).toLocaleString();identity.append(small);div.append(identity);
+    for(const text of [`${row.config.source==='synthetic'?'Synthetic':'Cyton'} · ${row.config.sample_rate_hz} Hz`,`${placement?'CUE LABELS':row.config.split.toUpperCase()} · ${row.status}`,`${row.counts.emg.toLocaleString()} samples`]){const el=document.createElement('span');el.textContent=text;if(text.startsWith('Synthetic'))el.className='synthetic';div.append(el);}
     const a=document.createElement('a');a.textContent=row.status==='recording'?'Recording…':'Download ZIP ↗';if(row.status!=='recording')a.href=`/api/sessions/${row.id}/export`;div.append(a);$('session-list').append(div);
   }
 }
 $('refresh').onclick=()=>refreshSessions().catch(e=>notice(e.message,true));
+$('import-placement').onclick=()=>{if(!sessionId)$('placement-file').click();};
+$('placement-file').onchange=async()=>{
+  const file=$('placement-file').files[0];if(!file)return;
+  $('import-placement').disabled=true;
+  try{
+    if(file.size>64*1024*1024)throw new Error('Placement export exceeds 64 MiB. Export a smaller comparison set.');
+    $('import-status').textContent='Validating and saving placement trials locally…';
+    const result=await api(`/api/import/placement?participant=${encodeURIComponent($('participant').value.trim())}`,{method:'POST',body:await file.text()});
+    $('import-status').textContent=`Imported ${result.imported} trial(s); ${result.already_present} already present. Original blocks, mappings and cues preserved.`;
+    await refreshSessions();
+  }catch(e){$('import-status').textContent=`Import failed: ${e.message}`;}
+  finally{$('placement-file').value='';$('import-placement').disabled=!!sessionId;}
+};
 
 FINGERS.forEach(name=>{const row=document.createElement('div');row.className='finger-row';row.innerHTML=`<span>${name}</span><div class="finger-track"><div class="measured"></div><div class="predicted"></div></div><output>—</output>`;$('finger-bars').append(row);});
 function drawSignal(){
@@ -307,7 +323,7 @@ function drawHand(points){
 async function updatePrediction(now){
   if(!$('predict').checked||predictionBusy||!running||now-lastPredictAt<100||filteredWindow.length!==profile.sample_rate_hz*.2)return;
   lastPredictAt=now;predictionBusy=true;
-  try{prediction=await api('/api/predict',{method:'POST',body:JSON.stringify({sample_rate_hz:profile.sample_rate_hz,mains_hz:profile.mains_hz,filtered_uv:filteredWindow})});
+  try{prediction=await api('/api/predict',{method:'POST',body:JSON.stringify({sample_rate_hz:profile.sample_rate_hz,mains_hz:profile.mains_hz,wiring:$('wiring').value,filtered_uv:filteredWindow})});
     $('model-status').textContent=`${prediction.training_source==='synthetic'?'Synthetic-trained demo · not validated on people':'Local CNN'} · predicts visual flexion ${prediction.label_delay_ms>=0?'+':''}${prediction.label_delay_ms} ms from window end`;
   }catch(e){$('predict').checked=false;$('model-status').textContent=e.message;prediction=null;}
   finally{predictionBusy=false;}
@@ -323,6 +339,12 @@ function draw(now){
 }
 try{
   const health=await api('/api/health');$('server').textContent='Recorder online · files stay on this computer';
+  $('storage-path').textContent=health.data_directory;
+  storageReady=health.storage_api_version===1;
+  if(!storageReady){
+    $('backup-all').removeAttribute('href');$('backup-all').setAttribute('aria-disabled','true');
+    $('import-status').textContent='Restart the local recorder to enable verified archives and placement imports. Older single-session ZIP downloads do not include checksum manifests.';
+  }
   if(!health.camera_model_ready||!health.mediapipe_ready)notice('Camera assets are missing. Run npm install and .venv\\Scripts\\python scripts/download_models.py.',true);
   const model=await api('/api/model');$('model-status').textContent=model.available?'Local model found. Enable comparison after connecting a source.':'No trained model yet. Record sessions, build a dataset, then run emg-train.';
   $('predict').disabled=!model.available;

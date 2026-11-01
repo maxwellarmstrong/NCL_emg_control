@@ -42,6 +42,16 @@ def test_synthetic_excluded_by_default(tmp_path):
         build_dataset(tmp_path/'sessions',tmp_path/'d.npz')
 
 
+def test_mixed_wiring_is_rejected(tmp_path):
+    generate(tmp_path/'sessions',seconds=2)
+    path=next((tmp_path/'sessions').glob('*/metadata.json'))
+    meta=json.loads(path.read_text())
+    meta['config']['wiring']='common'
+    path.write_text(json.dumps(meta))
+    with pytest.raises(ValueError,match='wiring'):
+        build_dataset(tmp_path/'sessions',tmp_path/'d.npz',allow_synthetic=True)
+
+
 def test_window_rejects_interior_occlusion_and_post_clipping(tmp_path):
     generate(tmp_path/'sessions',seconds=4)
     folder = sorted((tmp_path/'sessions').iterdir())[0]

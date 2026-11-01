@@ -21,3 +21,4 @@ def test_train_checkpoint_and_live_prediction_roundtrip(tmp_path, monkeypatch):
     assert prediction['training_source']=='synthetic'
     assert len(prediction['flexion'])==5 and all(0<=v<=1 for v in prediction['flexion'])
     assert client.post('/api/predict',json={'sample_rate_hz':250,'mains_hz':50,'filtered_uv':window}).status_code==409
+    assert client.post('/api/predict',json={'sample_rate_hz':250,'mains_hz':60,'wiring':'common','filtered_uv':window}).status_code==409

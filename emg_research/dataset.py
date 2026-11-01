@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from .signal import FilterConfig, filter_segments
+from .storage import data_directory
 
 
 def read_jsonl(path):
@@ -35,7 +36,7 @@ def aligned_label(frames, times, t_ms, max_gap_ms=100):
 
 def build_dataset(session_root, output, label_delay_ms=None, allow_synthetic=False):
     result = {k: [] for k in ("x", "y", "class_id", "session", "split", "end_ms")}
-    reports, configs, sources, delays = [], [], set(), set()
+    reports, configs, sources, delays, wirings = [], [], set(), set(), set()
     for folder in sorted(Path(session_root).iterdir()):
         if not (folder / "metadata.json").exists():
             continue
@@ -43,6 +44,9 @@ def build_dataset(session_root, output, label_delay_ms=None, allow_synthetic=Fal
         c = meta["config"]
         report = {"session": meta["id"], "accepted": 0, "rejected": 0}
         reports.append(report)
+        if meta.get('recording_kind', 'finger_motion') != 'finger_motion':
+            report['skip'] = 'Placement cues are not camera-measured finger labels'
+            continue
         if meta["status"] != "complete":
             report["skip"] = "Recording is incomplete"
             continue
@@ -53,6 +57,9 @@ def build_dataset(session_root, output, label_delay_ms=None, allow_synthetic=Fal
         if not samples or not frames:
             report["skip"] = "Missing EMG or visual labels"
             continue
+        wirings.add(c.get('wiring', 'unspecified'))
+        if len(wirings) > 1 or 'unspecified' in wirings:
+            raise ValueError('Do not mix electrode wiring or unknown montages in one dataset')
         config = FilterConfig(**{f.name: meta["filter"][f.name] for f in fields(FilterConfig)})
         signature = (config.sample_rate_hz, config.low_hz, config.high_hz, config.mains_hz, config.notch_q, config.order, config.warmup_seconds)
         if configs and signature != configs[0][0]:
@@ -117,7 +124,7 @@ def build_dataset(session_root, output, label_delay_ms=None, allow_synthetic=Fal
         raise ValueError("Keep synthetic and human recordings in separate datasets")
     metadata = {"schema_version": 1, "sample_rate_hz": configs[0][0][0], "window_ms": 200,
                 "hop_ms": 50, "window_samples": result["x"][0].shape[1], "filter": configs[0][1],
-                "label_delay_ms": next(iter(delays)), "training_source": next(iter(sources)),
+                "label_delay_ms": next(iter(delays)), "training_source": next(iter(sources)), "wiring": next(iter(wirings)),
                 "classification": "0=rest;1=thumb;2=index;3=middle;4=ring;5=little;-100=transition/combination/ambiguous",
                 "reports": reports}
     output = Path(output)
@@ -129,7 +136,7 @@ def build_dataset(session_root, output, label_delay_ms=None, allow_synthetic=Fal
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--sessions", type=Path, default=Path("data/sessions"))
+    p.add_argument("--sessions", type=Path, default=data_directory())
     p.add_argument("--output", type=Path, default=Path("artifacts/dataset.npz"))
     p.add_argument("--label-delay-ms", type=float)
     p.add_argument("--allow-synthetic", action="store_true")

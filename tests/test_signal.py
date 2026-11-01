@@ -44,6 +44,15 @@ def test_nyquist_validation():
     assert FilterConfig(mains_hz=0).sos().shape[0] == 4
 
 
+def test_cyton_report_distinguishes_adc_and_software_response():
+    from scripts.filter_report import report
+    profile=report(250)
+    adc=profile['nominal_cyton_adc']['adc_gain_db']
+    assert -3.1<adc['65']<-2.8
+    assert adc['100.0']<-7
+    assert 'nominal_cyton_adc' not in report(2000)
+
+
 @pytest.mark.parametrize('rate', [250,2000])
 def test_browser_sos_matches_scipy(rate):
     import json

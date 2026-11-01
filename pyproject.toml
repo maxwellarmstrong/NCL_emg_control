@@ -20,6 +20,8 @@ emg-dataset = "emg_research.dataset:main"
 emg-train = "emg_research.train:main"
 emg-demo = "emg_research.synthetic:main"
 emg-rl = "emg_research.rl:main"
+emg-storage = "emg_research.storage:main"
+emg-import-placement = "emg_research.placement:main"
 
 [tool.setuptools.packages.find]
 include = ["emg_research*"]

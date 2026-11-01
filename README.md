@@ -43,6 +43,31 @@ The server binds to this computer's loopback address. Raw EMG and landmarks are
 saved under `data/sessions/`; camera video is not saved. Recordings, generated
 artifacts, downloaded models and installed dependencies are excluded from Git.
 
+### Data storage, backup and existing placement work
+
+The Session Library shows the exact local directory. **Download ZIP** creates an
+additional browser download; the original stays on disk. **Download completed
+recordings** archives completed sessions with per-file SHA-256 checksums.
+`EMG_DATA_DIR` selects a dedicated data folder shared across code checkouts; the
+server, dataset, import and archive tools all honor it.
+
+The existing `feature/emg-placement-lab-2026-10-31` branch keeps trials in browser
+IndexedDB. Export its recording/comparison-set JSON, then use **Import placement-lab
+JSON** to preserve those trials in the research app's local archive. Raw samples,
+channel mappings, stage/retry boundaries and cues are retained. Placement cues
+are explicitly excluded from camera-supervised finger datasets.
+
+```powershell
+.\.venv\Scripts\python.exe -m emg_research.storage backup --output artifacts/backups/session-set-01.zip
+.\.venv\Scripts\python.exe -m emg_research.storage verify artifacts/backups/session-set-01.zip
+.\.venv\Scripts\python.exe -m emg_research.storage restore artifacts/backups/session-set-01.zip --data-dir D:\EMG\restored
+```
+
+The restore directory is an example. Keep a verified backup on an independent
+private device/service; a copy on the same disk does not protect against disk loss.
+No cloud upload is automatic. See [storage and repository integration](docs/INTEGRATION.md)
+for the reviewed branches, formats, configuration and remaining controller work.
+
 ### Filtering and hardware limits
 
 **The standard Cyton USB radio streams at 250 Hz.** Its research waveform filter
@@ -57,6 +82,11 @@ rectified control envelope. Tests verify filter stability, frequency response,
 and agreement between the browser and SciPy. These are validated starting
 profiles; the best cutoffs and notch settings still need evaluation on real
 training/validation recordings.
+
+The ADC also has a nominal −3 dB bandwidth of about **65 Hz at 250 SPS**, so the
+software passband is not a flat hardware response. Filter diagnostics include
+the nominal ADC response identified in the placement branch's research.
+[TI ADS1299 datasheet](https://www.ti.com/lit/ds/symlink/ads1299.pdf)
 
 ### Build datasets and train
 
@@ -102,6 +132,11 @@ worker loading. The 2 kHz test export contained 109,829 unique, ordered samples,
 matching its saved metadata. Four-epoch CNN training and short PPO/SAC runs also
 completed on synthetic data.
 
+The storage/integration follow-up passed **33 Python tests and four JavaScript
+tests**, adding verified backup/restore, placement import and wiring checks.
+Compatibility was also checked against the placement branch's own JavaScript
+record validator. See [integration validation](docs/INTEGRATION.md#validation).
+
 **Real Cyton acquisition, real camera-label quality, human decoding accuracy, and
 end-to-end latency still need validation.** Timestamps are browser-clock estimates,
 not hardware synchronization. Next steps are to collect separate real sessions,
@@ -119,6 +154,8 @@ emg_research/model.py     temporal CNN and checkpoint loading
 emg_research/train.py     training, baselines and held-out-session evaluation
 emg_research/rl.py        residual-control simulation and PPO/SAC runners
 emg_research/synthetic.py reproducible synthetic recording generator
+emg_research/placement.py placement-export validation and import
+emg_research/storage.py   archive manifests, verification and restoration
 scripts/                 launch, model download and filter diagnostics
 tests/                   Python and JavaScript checks
 ```
