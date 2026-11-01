@@ -71,6 +71,8 @@ pub struct App {
     manual: [f32; NUM_JOINTS],
     use_emg: bool,
     parser: CytonParser,
+    channel1_from7: bool,
+    isolation: emg::isolation::Capture,
     emg: EmgPipeline,
     /// Muscle-pair control (when `finger_mode` is off).
     gestures: GestureControl,
@@ -104,6 +106,8 @@ impl App {
             manual: [0.0; NUM_JOINTS],
             use_emg: false,
             parser: CytonParser::new(),
+            channel1_from7: false,
+            isolation: Default::default(),
             emg: EmgPipeline::new(),
             gestures: GestureControl::new(),
             fingers: {
@@ -305,17 +309,44 @@ impl App {
 
     // ---- OpenBCI / EMG ----------------------------------------------------
 
+    /// Select the six-electrode, three-axis session before loading calibration.
+    pub fn set_six_channel_session(&mut self, enabled: bool) {
+        self.emg.set_enabled(std::array::from_fn(|ch| !enabled || ch < 6));
+        self.gestures.set_three_axes(enabled);
+        self.reset_stream();
+    }
+
+    /// Route physical CH7 to logical CH1 for the six-channel replacement session.
+    pub fn set_channel1_from7(&mut self, enabled: bool) {
+        self.channel1_from7 = enabled;
+        self.reset_stream();
+    }
+
     /// Feed raw bytes from the Cyton serial stream.
     pub fn push_serial(&mut self, bytes: &[u8]) {
+        let channel1_from7 = self.channel1_from7;
         let (emg, fingers, gestures, finger_mode) = (&mut self.emg, &mut self.fingers, &mut self.gestures, self.finger_mode);
+        let capture = &mut self.isolation;
         self.parser.push(bytes, |s| {
-            emg.process(s);
+            let mapped = if channel1_from7 { emg::cyton::replace_channel1_with7(s) } else { *s };
+            emg.process(&mapped);
+            capture.push(&mapped, &emg.envelopes(), &emg.contact());
             if finger_mode {
                 fingers.process(&emg.envelopes(), &emg.contact());
             } else {
                 gestures.process(&emg.envelopes(), &emg.contact());
             }
         });
+    }
+
+    /// Diagnostic rows: 8 raw µV, 8 envelope µV, 8 saturation/contact flags.
+    pub fn set_isolation_capture(&mut self, enabled: bool) { self.isolation.set(enabled); }
+    pub fn take_isolation_samples(&mut self) -> Vec<f32> { self.isolation.take() }
+    pub fn isolation_overflow(&self) -> bool { self.isolation.overflow }
+
+    /// Fresh, independent replay. Output per sample: envelope8 + valid8.
+    pub fn replay_isolation(&self, raw: &[f32], channels: usize, car: bool, mains: u32) -> Result<Vec<f32>, JsValue> {
+        emg::isolation::replay(raw, channels, car, mains).map_err(JsValue::from_str)
     }
 
     /// Call when (re)connecting: clears parser and filter state, keeps calibration.

@@ -17,6 +17,31 @@ pub const UV_PER_COUNT: f32 = 4.5 / GAIN / 8_388_607.0 * 1e6;
 
 pub type Sample = [f32; NUM_CHANNELS];
 
+/// Physical CH7 replaces logical CH1; physical CH1 moves into the disabled slot.
+pub fn replace_channel1_with7(sample: &Sample) -> Sample {
+    let mut mapped = *sample;
+    mapped.swap(0, 6);
+    mapped
+}
+
+#[cfg(test)]
+#[test]
+fn replacement_survives_fragmented_packets_without_shifting_other_channels() {
+    let raw = encode_packet(42, [8_388_607, 200, -300, 400, -500, 600, 700, 800]);
+    let mut parser = CytonParser::new();
+    let mut received = Vec::new();
+    for chunk in raw.chunks(7) {
+        parser.push(chunk, |sample| received.push(replace_channel1_with7(sample)));
+    }
+    assert_eq!(received.len(), 1);
+    let expected = [700, 200, -300, 400, -500, 600, 8_388_607, 800];
+    for (got, count) in received[0].iter().zip(expected) {
+        assert_eq!(*got, count as f32 * UV_PER_COUNT);
+    }
+    assert_eq!(parser.packets, 1);
+    assert_eq!(parser.dropped, 0);
+}
+
 pub struct CytonParser {
     buf: [u8; PACKET_LEN],
     len: usize,

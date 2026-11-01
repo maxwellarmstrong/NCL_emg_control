@@ -333,6 +333,7 @@ pub struct GestureControl {
     level: [f64; NUM_GESTURES],
     report: [GestureReport; NUM_GESTURES],
     pub gain: f32,
+    gesture_count: usize,
     envelope: [f32; NUM_CHANNELS],
     contact: [bool; NUM_CHANNELS],
     recent: [f32; NUM_CHANNELS],
@@ -387,6 +388,7 @@ impl GestureControl {
             level: [LEVEL_MAX; NUM_GESTURES],
             report: [GestureReport::default(); NUM_GESTURES],
             gain: DEFAULT_GAIN,
+            gesture_count: NUM_GESTURES,
             envelope: [0.0; NUM_CHANNELS],
             contact: [true; NUM_CHANNELS],
             recent: [0.0; NUM_CHANNELS],
@@ -400,6 +402,13 @@ impl GestureControl {
             run: None,
             inputs: [0.0; NUM_JOINTS],
         }
+    }
+
+    pub fn set_three_axes(&mut self, enabled: bool) {
+        let gain = self.gain;
+        *self = Self::new();
+        self.gain = gain;
+        self.gesture_count = if enabled { 6 } else { NUM_GESTURES };
     }
 
     pub fn calibration(&self) -> Calibration {
@@ -424,6 +433,11 @@ impl GestureControl {
         self.templates = cal.templates;
         self.level = cal.level;
         self.report = cal.report;
+        for g in self.gesture_count..NUM_GESTURES {
+            self.templates[g] = None;
+            self.data[g] = GestureData::default();
+            self.report[g] = GestureReport::default();
+        }
         self.update_stasis();
         self.update_coupling();
         self.reset_state();
@@ -449,7 +463,7 @@ impl GestureControl {
 
     /// Every gesture is calibrated.
     pub fn calibrated(&self) -> bool {
-        self.templates.iter().all(Option::is_some)
+        self.templates[..self.gesture_count].iter().all(Option::is_some)
     }
 
     /// The gesture driving `axis` in either direction is calibrated.
@@ -799,7 +813,7 @@ impl GestureControl {
     fn update_inputs(&mut self) {
         self.inputs = [0.0; NUM_JOINTS];
         let gestures: Vec<usize> = match self.run.as_ref().map(|r| r.step) {
-            None => (0..NUM_GESTURES).collect(),
+            None => (0..self.gesture_count).collect(),
             // training: only the gesture being trained moves the arm
             Some(Step::Train(g)) => vec![g],
             Some(_) => Vec::new(),
@@ -814,12 +828,12 @@ impl GestureControl {
 
     /// Phase 1 for every gesture (rest in every posture first), then phase 2 if `train_after`.
     pub fn start_calibration(&mut self, train_after: bool) {
-        self.start(Step::Rest(0), (0..NUM_GESTURES).collect(), Vec::new(), train_after);
+        self.start(Step::Rest(0), (0..self.gesture_count).collect(), Vec::new(), train_after);
     }
 
     /// Phase 1 for one gesture, keeping the rest model (a full run if there is none).
     pub fn start_gesture(&mut self, gesture: usize, train_after: bool) {
-        if gesture >= NUM_GESTURES {
+        if gesture >= self.gesture_count {
             return;
         }
         if self.rest.is_none() {
@@ -1384,6 +1398,30 @@ impl GestureControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn three_axis_session_skips_grip_and_rejects_restored_grip_template() {
+        let mut g = GestureControl::new();
+        g.set_three_axes(true);
+        g.start_calibration(true);
+        assert_eq!(g.run.as_ref().unwrap().calibrate, vec![0, 1, 2, 3, 4, 5]);
+        g.cancel();
+        g.start_gesture(6, true);
+        assert!(!g.running());
+        let mut old = GestureControl::new().calibration();
+        old.templates = [Some([1.0; NUM_CHANNELS]); NUM_GESTURES];
+        g.restore(old);
+        assert!(g.calibrated());
+        assert!(!g.drives(3));
+        assert!(g.templates[6].is_none());
+        g.start_training();
+        assert_eq!(g.run.as_ref().unwrap().train, vec![0, 1, 2, 3, 4, 5]);
+        g.cancel();
+        g.active[6] = true;
+        g.power[6] = 1.0;
+        g.update_inputs();
+        assert_eq!(g.axis_inputs()[3], 0.0);
+    }
 
     fn noise(state: &mut u32) -> f64 {
         *state ^= *state << 13;

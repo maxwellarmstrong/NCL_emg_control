@@ -87,6 +87,7 @@ impl Chain {
 pub struct EmgPipeline {
     chains: [Chain; NUM_CHANNELS],
     mains_hz: f32,
+    enabled: [bool; NUM_CHANNELS],
     /// Common-average reference on/off (on for single-row wiring with a shared REF).
     pub car: bool,
     envelope: [f32; NUM_CHANNELS],
@@ -95,7 +96,12 @@ pub struct EmgPipeline {
 impl EmgPipeline {
     pub fn new() -> Self {
         let mains_hz = 60.0;
-        Self { chains: std::array::from_fn(|_| Chain::new(mains_hz)), mains_hz, car: true, envelope: [0.0; NUM_CHANNELS] }
+        Self { chains: std::array::from_fn(|_| Chain::new(mains_hz)), mains_hz, enabled: [true; NUM_CHANNELS], car: true, envelope: [0.0; NUM_CHANNELS] }
+    }
+
+    pub fn set_enabled(&mut self, enabled: [bool; NUM_CHANNELS]) {
+        self.enabled = enabled;
+        self.reset_filters();
     }
 
     /// Reset filter state.
@@ -115,7 +121,7 @@ impl EmgPipeline {
             hp[ch] = self.chains[ch].highpass(x);
         }
         if self.car {
-            let good: Vec<usize> = (0..NUM_CHANNELS).filter(|&ch| self.chains[ch].contact()).collect();
+            let good: Vec<usize> = (0..NUM_CHANNELS).filter(|&ch| self.enabled[ch] && self.chains[ch].contact()).collect();
             if good.len() >= CAR_MIN_CHANNELS {
                 let mean = good.iter().map(|&ch| hp[ch]).sum::<f64>() / good.len() as f64;
                 hp.iter_mut().for_each(|y| *y -= mean);
@@ -123,13 +129,13 @@ impl EmgPipeline {
         }
         for (ch, &y) in hp.iter().enumerate() {
             let env = self.chains[ch].envelope(y);
-            self.envelope[ch] = if self.chains[ch].contact() { env } else { 0.0 };
+            self.envelope[ch] = if self.enabled[ch] && self.chains[ch].contact() { env } else { 0.0 };
         }
     }
 
     /// Per channel: false while the input is railed (electrode off / no contact).
     pub fn contact(&self) -> [bool; NUM_CHANNELS] {
-        std::array::from_fn(|ch| self.chains[ch].contact())
+        std::array::from_fn(|ch| self.enabled[ch] && self.chains[ch].contact())
     }
 
     pub fn envelopes(&self) -> [f32; NUM_CHANNELS] {
@@ -145,6 +151,28 @@ impl EmgPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_channels_do_not_change_active_signals_or_reappear_after_reset() {
+        let mut a = EmgPipeline::new();
+        let mut b = EmgPipeline::new();
+        let enabled = std::array::from_fn(|ch| ch < 6);
+        a.set_enabled(enabled);
+        b.set_enabled(enabled);
+        for i in 0..1000 {
+            let mut x = std::array::from_fn(|ch| ((i * (ch + 1)) as f32 * 0.19).sin() * 50.0);
+            let mut y = x;
+            x[6] = 0.0; x[7] = 0.0;
+            y[6] = 180_000.0 * (i as f32 * 0.3).sin(); y[7] = -190_000.0;
+            a.process(&x); b.process(&y);
+            assert_eq!(a.envelopes(), b.envelopes());
+        }
+        assert_eq!(&a.envelopes()[6..], &[0.0, 0.0]);
+        a.reset_filters();
+        assert_eq!(a.contact(), enabled);
+        a.set_mains(50.0);
+        assert_eq!(a.contact(), enabled);
+    }
 
     /// Deterministic pseudo-noise in -1..1.
     fn noise(state: &mut u32) -> f32 {

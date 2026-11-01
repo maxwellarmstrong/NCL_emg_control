@@ -1,0 +1,180 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1520 730" width="1520" height="730" font-family="system-ui, 'Segoe UI', sans-serif">
+  <title>Six-channel right-arm placement: starting points, not optimized sites</title>
+  <defs>
+    <!-- arm silhouette in local coords: shoulder at top, lateral (thumb) side = -x -->
+    <path id="arm" d="M -35 0 C -62 5 -68 50 -62 85 C -58 120 -55 180 -52 230 C -51 245 -58 265 -62 290
+      C -64 330 -48 390 -36 440 L -38 455 C -58 470 -60 505 -48 515 C -40 520 -36 500 -32 490
+      C -34 520 -30 555 -10 565 C 5 570 20 568 30 555 C 38 530 36 480 32 445
+      C 40 400 55 330 54 290 C 54 265 50 248 48 235 C 50 180 48 130 40 95
+      C 38 60 30 10 0 -5 C -15 -8 -28 -4 -35 0 Z"/>
+    <g id="el">
+      <circle r="7.5" fill="#f2f3f5" stroke-width="2.5"/>
+      <circle r="2.5" fill="#8a8f98" stroke="none"/>
+    </g>
+    <g id="fingers" stroke="#ffffff1c" stroke-width="1.2" fill="none">
+      <path d="M -14 528 L -13 562 M 2 528 L 3 566 M 17 526 L 18 562"/>
+    </g>
+  </defs>
+
+  <rect width="1520" height="730" fill="#1a1c21"/>
+
+  <text x="30" y="42" font-size="20" font-weight="600" fill="#e3e6eb">Today: CH7 replaces CH1 · same skin sites + REF + BIAS</text>
+  <text x="30" y="64" font-size="12.5" fill="#8b919c">Starting locations only: test each movement and adjust one electrode at a time. Three controls: base, reach, elbow. Gripper stays manual.</text>
+
+  <!-- ===================== FRONT VIEW ===================== -->
+  <text x="230" y="92" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c" text-anchor="middle">FRONT · PALM FORWARD</text>
+  <g transform="translate(230 110)">
+    <use href="#arm" xlink:href="#arm" fill="#2c3038" stroke="#4a505c" stroke-width="1.5"/>
+    <use href="#fingers" xlink:href="#fingers"/>
+    <path d="M -45 242 Q 0 256 44 238" stroke="#ffffff22" fill="none" stroke-width="1.5"/>
+    <!-- muscle bellies, coloured by joint -->
+    <ellipse cx="-2" cy="160" rx="30" ry="62" fill="#4da3ff" opacity=".2"/>
+    <ellipse cx="22" cy="285" rx="11" ry="32" fill="#b48cff" opacity=".25" transform="rotate(35 22 285)"/>
+    <ellipse cx="0" cy="415" rx="15" ry="26" fill="#ff9f43" opacity=".2"/>
+  </g>
+  <!-- front electrodes (world coords) -->
+  <use href="#el" xlink:href="#el" x="228" y="269" stroke="#4da3ff"/>
+  <use href="#el" xlink:href="#el" x="251" y="389" stroke="#b48cff"/>
+  <use href="#el" xlink:href="#el" x="230" y="528" stroke="#ff9f43"/>
+
+  <!-- front labels -->
+  <g font-size="13" fill="#e3e6eb">
+    <path d="M 305 269 L 240 269" stroke="#4da3ff" stroke-width="1"/>
+    <text x="310" y="267">CH4 · Bicep curl <tspan font-weight="700" fill="#4da3ff">→ Reach in</tspan></text>
+    <text x="310" y="283" font-size="11" fill="#8b919c">biceps belly · front of upper arm</text>
+
+    <path d="M 305 389 L 262 389" stroke="#b48cff" stroke-width="1"/>
+    <text x="310" y="387">CH7 · Rotate in (was CH1) <tspan font-weight="700" fill="#b48cff">→ Base +</tspan></text>
+    <text x="310" y="403" font-size="11" fill="#8b919c">pronator teres · just below elbow crease</text>
+
+
+    <path d="M 305 552 L 241 531" stroke="#ff9f43" stroke-width="1"/>
+    <text x="310" y="550">CH6 · Wrist curl <tspan font-weight="700" fill="#ff9f43">→ Elbow −</tspan> (aims)</text>
+    <text x="310" y="566" font-size="11" fill="#8b919c">wrist flexors · inner forearm, lower third</text>
+    <text x="310" y="580" font-size="11" fill="#8b919c">keep away from the upper-forearm rotation site</text>
+
+  </g>
+  <text x="220" y="712" font-size="11" fill="#8b919c" text-anchor="end">◀ thumb side</text>
+  <text x="240" y="712" font-size="11" fill="#8b919c">body side ▶</text>
+
+  <!-- ===================== BACK VIEW ===================== -->
+  <text x="640" y="92" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c" text-anchor="middle">BACK</text>
+  <g transform="translate(640 110) scale(-1 1)">
+    <use href="#arm" xlink:href="#arm" fill="#2c3038" stroke="#4a505c" stroke-width="1.5"/>
+    <use href="#fingers" xlink:href="#fingers"/>
+    <ellipse cx="0" cy="150" rx="32" ry="72" fill="#4da3ff" opacity=".2"/>
+    <ellipse cx="-36" cy="288" rx="11" ry="24" fill="#b48cff" opacity=".25" transform="rotate(20 -36 288)"/>
+    <ellipse cx="-10" cy="398" rx="16" ry="28" fill="#ff9f43" opacity=".2"/>
+    <circle cx="0" cy="250" r="11" fill="#ffffff" opacity=".1"/>
+  </g>
+  <use href="#el" xlink:href="#el" x="648" y="267" stroke="#4da3ff"/>
+  <use href="#el" xlink:href="#el" x="640" y="360" stroke="#ffffff"/>
+  <use href="#el" xlink:href="#el" x="677" y="397" stroke="#b48cff"/>
+  <use href="#el" xlink:href="#el" x="650" y="508" stroke="#ff9f43"/>
+  <use href="#el" xlink:href="#el" x="614" y="548" stroke="#d9dce1"/>
+
+  <g font-size="13" fill="#e3e6eb">
+    <path d="M 711 267 L 658 267" stroke="#4da3ff" stroke-width="1"/>
+    <text x="716" y="265">CH3 · Tricep extend <tspan font-weight="700" fill="#4da3ff">→ Reach out</tspan></text>
+    <text x="716" y="281" font-size="11" fill="#8b919c">triceps · mid back of upper arm</text>
+
+    <path d="M 711 348 L 650 359" stroke="#ffffff" stroke-width="1"/>
+    <text x="716" y="350"><tspan font-weight="700" fill="#ffffff">REF</tspan> Elbow point</text>
+    <text x="716" y="366" font-size="11" fill="#8b919c">olecranon bone · bottom SRB pin</text>
+
+    <path d="M 711 397 L 688 397" stroke="#b48cff" stroke-width="1"/>
+    <text x="716" y="395">CH2 · Rotate out <tspan font-weight="700" fill="#b48cff">→ Base −</tspan></text>
+    <text x="716" y="411" font-size="11" fill="#8b919c">outer forearm below elbow · test palm-up response</text>
+
+    <path d="M 711 508 L 661 508" stroke="#ff9f43" stroke-width="1"/>
+    <text x="716" y="506">CH5 · Wrist back <tspan font-weight="700" fill="#ff9f43">→ Elbow +</tspan> (aims)</text>
+    <text x="716" y="522" font-size="11" fill="#8b919c">wrist extensors · lower third</text>
+
+    <path d="M 711 558 L 624 549" stroke="#d9dce1" stroke-width="1"/>
+    <text x="716" y="556"><tspan font-weight="700" fill="#d9dce1">BIAS</tspan> Wrist bone</text>
+    <text x="716" y="572" font-size="11" fill="#8b919c">pinky-side bump · bottom BIAS pin</text>
+  </g>
+  <text x="630" y="712" font-size="11" fill="#8b919c" text-anchor="end">◀ body side</text>
+  <text x="650" y="712" font-size="11" fill="#8b919c">thumb side ▶</text>
+
+  <!-- ===================== WIRING ===================== -->
+  <g transform="translate(200 0)">
+  <text x="910" y="92" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c">WIRING · CYTON PIN HEADER (SIMPLIFIED)</text>
+  <rect x="906" y="102" width="404" height="100" rx="10" fill="#241f36" stroke="#3c3556"/>
+  <text x="918" y="122" font-size="10.5" fill="#8b919c">Silkscreen says N1P…N8P on both rows. Use only the BOTTOM row.</text>
+  <g font-size="10.5" fill="#c9cdd4" text-anchor="middle">
+    <text x="924" y="143">BIAS</text><text x="954" y="143">SRB</text>
+    <text x="984" y="143">1</text><text x="1018" y="143">2</text><text x="1052" y="143">3</text><text x="1086" y="143">4</text>
+    <text x="1120" y="143">5</text><text x="1154" y="143">6</text><text x="1188" y="143">7</text><text x="1222" y="143">8</text>
+  </g>
+  <g stroke="#00000066">
+    <!-- top row: empty -->
+    <g fill="#3a3f4a">
+      <rect x="917" y="148" width="14" height="14" rx="2"/><rect x="947" y="148" width="14" height="14" rx="2"/>
+      <rect x="977" y="148" width="14" height="14" rx="2"/><rect x="1011" y="148" width="14" height="14" rx="2"/>
+      <rect x="1045" y="148" width="14" height="14" rx="2"/><rect x="1079" y="148" width="14" height="14" rx="2"/>
+      <rect x="1113" y="148" width="14" height="14" rx="2"/><rect x="1147" y="148" width="14" height="14" rx="2"/>
+      <rect x="1181" y="148" width="14" height="14" rx="2"/><rect x="1215" y="148" width="14" height="14" rx="2"/>
+    </g>
+    <!-- bottom row: every lead; channel pins are interchangeable -->
+    <rect x="917" y="176" width="14" height="14" rx="2" fill="#d9dce1"/>
+    <rect x="947" y="176" width="14" height="14" rx="2" fill="#ffffff"/>
+    <g fill="#9aa0aa">
+      <rect x="977" y="176" width="14" height="14" rx="2" fill="#3a3f4a"/><rect x="1011" y="176" width="14" height="14" rx="2"/>
+      <rect x="1045" y="176" width="14" height="14" rx="2"/><rect x="1079" y="176" width="14" height="14" rx="2"/>
+      <rect x="1113" y="176" width="14" height="14" rx="2"/><rect x="1147" y="176" width="14" height="14" rx="2"/>
+      <rect x="1181" y="176" width="14" height="14" rx="2"/><rect x="1215" y="176" width="14" height="14" rx="2" fill="#3a3f4a"/>
+    </g>
+  </g>
+  <g font-size="11" fill="#e3e6eb">
+    <text x="1240" y="159" fill="#8b919c">top · empty</text>
+    <text x="1240" y="187"><tspan font-weight="700">bottom</tspan></text>
+  </g>
+  <text x="910" y="218" font-size="10.5" fill="#8b919c">Use CH2–7. Former CH1 lead goes to bottom N7P; CH1/8 empty.</text>
+  <!-- close-up: one muscle electrode plus REF and BIAS -->
+  <rect x="906" y="228" width="404" height="132" rx="12" fill="#2c3038" stroke="#4a505c"/>
+  <ellipse cx="1190" cy="278" rx="95" ry="32" fill="#4da3ff" opacity=".2"/>
+  <g stroke="#4da3ff" stroke-opacity=".35" stroke-width="1">
+    <path d="M 1115 268 L 1265 268 M 1105 278 L 1275 278 M 1115 288 L 1265 288"/>
+  </g>
+  <text x="1300" y="244" font-size="10.5" fill="#8b919c" text-anchor="end">biceps</text>
+  <path d="M 1190 265 C 1190 222 1086 232 1086 191" fill="none" stroke="#4da3ff" stroke-width="2.5"/>
+  <path d="M 964 265 C 964 232 954 222 954 191" fill="none" stroke="#ffffff" stroke-width="2"/>
+  <path d="M 924 265 L 924 191" fill="none" stroke="#d9dce1" stroke-width="2"/>
+  <use href="#el" xlink:href="#el" x="1190" y="272" stroke="#4da3ff"/>
+  <use href="#el" xlink:href="#el" x="964" y="272" stroke="#ffffff"/>
+  <use href="#el" xlink:href="#el" x="924" y="272" stroke="#d9dce1"/>
+  <g font-size="11.5" fill="#e3e6eb">
+    <text x="1190" y="324" text-anchor="middle"><tspan font-weight="700" fill="#4da3ff">Biceps</tspan> → bottom CH4</text>
+    <text x="1190" y="339" font-size="10.5" fill="#8b919c" text-anchor="middle">centre of the muscle belly</text>
+    <text x="916" y="304"><tspan font-weight="700">REF</tspan> → bottom SRB pin</text>
+    <text x="916" y="318" font-size="10.5" fill="#8b919c">on the elbow point</text>
+    <text x="916" y="336"><tspan font-weight="700">BIAS</tspan> → bottom BIAS pin</text>
+    <text x="916" y="350" font-size="10.5" fill="#8b919c">on the wrist bone</text>
+  </g>
+  <text x="910" y="380" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c">▲ UP CLOSE: BICEPS ELECTRODE, PLUS REF AND BIAS</text>
+
+  <!-- checklist -->
+  <text x="910" y="428" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c">CHECKLIST</text>
+  <g font-size="12.5" fill="#e3e6eb">
+    <text x="910" y="452">1. Clean intact skin and let it dry; secure loose leads.</text>
+    <text x="910" y="473">2. One gel electrode per muscle, where it bulges when flexed.</text>
+    <text x="910" y="494">3. Six sensing leads → bottom CH2–7; CH1/8 unused.</text>
+    <text x="910" y="515">4. REF on the elbow point → bottom SRB pin.</text>
+    <text x="910" y="536">5. BIAS on the wrist bone → bottom BIAS pin.</text>
+    <text x="910" y="557">6. First check rest and each gesture, then calibrate:</text>
+    <text x="926" y="575">move one weak/mixed site at a time and retest.</text>
+  </g>
+
+  <!-- legend -->
+  <text x="910" y="598" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c">AXIS  ·  GESTURE</text>
+  <g font-size="12.5" fill="#e3e6eb">
+    <rect x="910" y="608" width="12" height="12" rx="3" fill="#b48cff"/><text x="930" y="619" font-weight="700">Base</text><text x="1022" y="619">+ wrist rotate in  /  − wrist rotate out</text>
+    <rect x="910" y="628" width="12" height="12" rx="3" fill="#4da3ff"/><text x="930" y="639" font-weight="700">Reach</text><text x="1022" y="639">out: tricep extend  /  in: bicep curl</text>
+    <rect x="910" y="648" width="12" height="12" rx="3" fill="#ff9f43"/><text x="930" y="659" font-weight="700">Elbow (aim)</text><text x="1022" y="659">+ wrist back  /  − wrist curl</text>
+    <text x="910" y="679" fill="#8b919c">Gripper: manual buttons only today.</text>
+    <text x="910" y="699" fill="#8b919c">Keep the Cyton battery-powered while worn.</text>
+  </g>
+  <text x="910" y="718" font-size="11" fill="#8b919c">Reach moves the gripper tip in/out along the way the gripper points.</text>
+  </g>
+</svg>

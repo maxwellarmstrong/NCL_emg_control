@@ -25,6 +25,7 @@ from pathlib import Path
 
 TCP_PORT = 3000
 CALIBRATION = Path(__file__).parent / 'calibration.json'
+CALIBRATIONS = {'/calibration': CALIBRATION, '/calibration-six': CALIBRATION.with_name('calibration-six.json')}
 
 
 class Relay:
@@ -82,10 +83,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             super().log_message(fmt, *args)
 
     def do_GET(self):
-        if self.path == '/calibration':
-            if not CALIBRATION.exists():
+        if self.path in CALIBRATIONS:
+            calibration = CALIBRATIONS[self.path]
+            if not calibration.exists():
                 return self.reply(404, b'no saved calibration')
-            return self.reply(200, CALIBRATION.read_bytes())
+            return self.reply(200, calibration.read_bytes())
         if self.path.startswith('/shield/'):
             self.shield()
         else:
@@ -95,16 +97,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.shield()
 
     def do_PUT(self):
-        if self.path != '/calibration':
+        if self.path not in CALIBRATIONS:
             return self.reply(404, b'not found')
         body = self.rfile.read(int(self.headers.get('Content-Length') or 0))
         try:
             json.loads(body)
         except ValueError:
             return self.reply(400, b'not JSON')
-        tmp = CALIBRATION.with_suffix('.tmp')
+        calibration = CALIBRATIONS[self.path]
+        tmp = calibration.with_suffix('.tmp')
         tmp.write_bytes(body)
-        tmp.replace(CALIBRATION)  # never leave a half-written file
+        tmp.replace(calibration)  # never leave a half-written file
         self.reply(204, b'')
 
     def do_DELETE(self):

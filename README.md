@@ -1,5 +1,7 @@
 # EMG Arm
 
+**October 31 placement-lab branch:** read [BRANCH_ACCOMPLISHMENTS.md](BRANCH_ACCOMPLISHMENTS.md) for the exact changes, upstream provenance, setup, validation, and next research steps.
+
 Drive a Waveshare RoArm-M2-S desktop arm, simulated and optionally the real one,
 with forearm/upper-arm muscle signals from an OpenBCI Cyton. The simulated arm uses
 Waveshare's own joint chain and link meshes, so its four joints mean exactly what
@@ -7,6 +9,24 @@ the real arm's do: the base turns (left/right), the shoulder leans the upper arm
 forward and back, the elbow bends the forearm, and the fourth joint opens and
 closes the gripper. Kinematics, rendering (WebGL2) and the EMG signal chain are Rust
 compiled to WASM; the page talks to the Cyton dongle directly via Web Serial.
+
+## Local six-channel session (right arm)
+
+Open `http://127.0.0.1:8768/?session=six` for today's configuration:
+CH1–6 sensing electrodes plus separate shared REF and BIAS; CH7–8 are
+powered down, removed from bias, and excluded from filtering/calibration/decoding.
+The calibration includes six gestures for base rotation, coordinated reach and
+elbow angle. The gripper remains manual. The original URL keeps eight-channel mode.
+
+The numbered starting layout is in **Today's placement guide**. These are
+candidate locations, not validated optimal placements. Keep the forearm supported,
+check rest first, then test one gesture at a time before calibration. Rotation
+is likely the hardest pair to separate; move one electrode at a time and repeat
+the same test. This shared-reference arrangement follows this app's design;
+OpenBCI's standard bipolar EMG setup uses different wiring/settings.
+
+Six-channel calibration saves separately to `calibration-six.json`. Changing
+sites requires recalibration. Software tests do not establish on-body accuracy.
 
 ## Build & run
 
@@ -363,3 +383,93 @@ src/lib.rs            wasm-bindgen API used by the page
 www/                  index.html, main.js (UI), serial.js (Web Serial), wifi.js (WiFi Shield, not in the UI),
                       roarm.js (real arm), simulator.js
 ```
+
+### Temporary CH1 input replacement
+Use `http://127.0.0.1:8768/?session=six&ch1=7` to test the same CH1 skin electrode/lead on the bottom N7P pin. CH2–6, REF and BIAS remain unchanged. Real acquisition enables physical CH2–7 and disables CH1/8; physical CH7 is routed into the original CH1 processing/control slot. Meters and the guide identify the physical replacement. The normal six-channel URL remains unchanged. Compare readings before drawing conclusions about a failed input versus electrode/lead contact.
+
+### Electrode placement lab
+
+Use **Test electrode isolation** to compare electrode sites independently of the gesture decoder. The dialog pauses simulation movement and disengages physical-arm following. Choose a movement, check the illustrated instructions, enter the placement name and channel locations, and press Ready. One test uses a 3-second settling period, a 10-second resting baseline and three repetitions of 3-second preparation, 3-second gentle hold and 5-second recovery. No chat timing is needed.
+
+Each received Cyton packet contributes raw logical-channel µV, processed envelope µV and saturation flags. Timing follows received samples at 250 Hz. Brief packet gaps repeat the affected block; severe loss, sustained missing data, buffer overflow, a hidden tab or active-channel saturation stop the current test without scoring it. The first 0.5 seconds of each baseline/hold are excluded from summary statistics. Results show baseline and hold medians, baseline-relative changes per repetition and the strongest responding channel. Selected-channel share is descriptive, not classification accuracy or muscle purity; common-average referencing remains on.
+
+Completed recordings and placement notes are saved locally in this browser's IndexedDB and can be exported as JSON. Synthetic demonstrations are labeled and shown separately from real recordings. Test records do not retrain or replace calibration. Use the same movement/posture/effort and change one electrode at a time. Raw values follow the optional CH7→logical CH1 mapping; metadata includes the displayed channel labels.
+
+Validation: `node --test www/isolation-core.test.mjs`, `cargo test`, then the usual WASM build. A synthetic test automatically generates the selected channel's contraction during the Hold cue; it validates the workflow, not human performance.
+
+### Same-recording CAR replay
+
+The placement lab now includes a four-step rotation baseline: relaxed-rest control,
+palm-down rotation, palm-up rotation, and triceps comparison. Individual steps are human-ready gated and record three observation/hold periods. The standard procedure described below can run them automatically. No wiring change is
+needed. Keep comparison-set name, sites, posture and effort consistent within a set.
+
+Every completed recording is independently replayed twice by the **production Rust
+EmgPipeline** with CAR on/off. Both modes reset their filters separately for the baseline and each repetition,
+using the 3-second settle/prepare period as warm-up. They do not reconstruct
+previous live filter history or concatenate across discarded attempts. Live filters, templates and control settings are unchanged.
+
+Results show baseline and per-repeat envelope changes for every channel. The
+baseline report compares positive response patterns using cosine distance (0 same
+shape, 1 no overlap), guarded against weak responses. It also shows rest levels and
+CH1/CH2 responses during triceps activity. These are descriptive signal metrics,
+not held-out accuracy, muscle independence, or false-command rates. The existing
+gesture decoder is deliberately not applied across differently processed signals
+using its old calibration.
+
+Comparison grouping requires matching set name, layout, site notes, labels,
+physical mapping, acquisition, source and processing settings. Latest matching
+trial per action is displayed; all trials remain in history. Synthetic records
+are separate. JSON exports include raw samples and both replay summaries. Old
+complete v1 recordings can be replayed via View → Replay both modes. Unsupported,
+incomplete or invalid records are rejected. Camera and model retraining are not
+part of this feature.
+
+Tests: `node --test www/isolation-*.test.mjs`, `cargo test`, and
+`wasm-pack build --target web --out-dir www/pkg --no-typescript`.
+
+The placement lab now verifies a fresh, roughly 250 Hz packet stream for a full
+second before enabling Ready. An open serial port alone is insufficient. If
+packets stop, the badge changes to waiting/stalled and stale meters are hidden;
+the existing recording interruption checks remain strict. Reconnect reuses a
+unique previously authorized FT231X dongle, with a chooser fallback when none or
+multiple are available.
+
+Packet-gap recovery: a small drop/resync discards the entire uncertain input
+batch and rewinds the affected baseline or prepare/hold/recover block. Earlier
+complete blocks are retained. Up to 3 retries/block and 8/run are allowed; more
+than 25 missing packets or 3 parser resyncs in one batch, stream resets, long
+stalls, disconnects and overflow still abort. These conservative retry limits
+are engineering defaults. No samples are interpolated. Schema3 exports recovery
+events and contiguous blocks; interrupted runs have an unscored partial export.
+Replay version car-replay-v2-blocks reprocesses old compatible recordings before
+including them in comparisons.
+
+
+### One-start standard placement procedure
+
+**Start standard procedure · 6:22** runs rest, pronation, supination, triceps,
+biceps, wrist extension and wrist flexion, in that order. Seven 46-second
+recordings plus six 10-second position changes total 382 seconds before save
+latency, stream-readiness waits and packet retries. Instructions update before
+each position-change countdown. Rest control cues refer to observations, never
+contractions. The first start is user-gated; later movements start automatically.
+
+Each movement is replayed and saved before progressing. Stop, close, hidden tab,
+recording errors or a failed local save prevent further automatic progression.
+Completed movements stay available; unfinished movements can be retried
+individually. Every standard-procedure recording includes sequence ID, order
+and index, without pooling samples between movements.
+
+Storage: IndexedDB `emg-isolation-v1`, stores `recordings` and `summaries`, under
+the exact browser origin (currently http://127.0.0.1:8768). Raw samples, movement
+cues, placement/mapping metadata, retry logs and analysis are local to that browser.
+Clearing site data, changing browser/profile or changing origin can remove or
+hide access. **Export this comparison set (JSON)** downloads all completed
+recordings matching the current set, source, layout, sites and processing;
+repeat trials are retained. A completed but unsaved current record is also
+included. Interrupted attempts have a separate unscored export. No cloud backup
+is performed. Controller calibration is separate: the local server stores
+`calibration-six.json` for this six-channel session (`calibration.json` otherwise).
+The placement procedure does not train or overwrite the controller.
+
+Sequence tests: `node --test www/isolation-*.test.mjs`.

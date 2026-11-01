@@ -12,8 +12,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 //            SRB pin (SRB2 on, so every P input sees REF).
 //   bipolar: a top+bottom pair on each muscle, no SRB (SRB2 off).
 const SRB2 = { common: 1, bipolar: 0 };
-const channelConfig = (wiring) =>
-  Array.from({ length: 8 }, (_, i) => `x${i + 1}0601${SRB2[wiring]}0X`);
+export const channelConfig = (wiring, activeChannels = 8, channel1From7 = false) =>
+  Array.from({ length: 8 }, (_, i) => (channel1From7 && activeChannels === 6 ? i >= 1 && i <= 6 : i < activeChannels)
+    ? `x${i + 1}0601${SRB2[wiring]}0X`
+    : `x${i + 1}161000X`);
 // Dongle-level "is the radio link up?" query (OpenBCI_Radios v2 host command).
 const SYS_STATUS = new Uint8Array([0xf0, 0x07]);
 
@@ -22,8 +24,11 @@ export class CytonSerial {
     return 'serial' in navigator;
   }
 
-  constructor({ onData, onStatus, onClose, wiring = 'common' }) {
+  constructor({ onData, onStatus, onClose, wiring = 'common', activeChannels = 8, channel1From7 = false }) {
     if (!(wiring in SRB2)) throw new Error(`Unknown wiring mode: ${wiring}`);
+    if (![6, 8].includes(activeChannels)) throw new Error('Expected six or eight active channels');
+    this.activeChannels = activeChannels;
+    this.channel1From7 = channel1From7 && activeChannels === 6;
     this.wiring = wiring;
     this.onData = onData;
     this.onStatus = onStatus;
@@ -35,7 +40,14 @@ export class CytonSerial {
   }
 
   async connect() {
-    this.port = await navigator.serial.requestPort();
+    // Reuse only a unique, previously authorized FT231X dongle. Ambiguity
+    // still opens the chooser; getPorts() never grants new permissions.
+    const authorized = await navigator.serial.getPorts();
+    const dongles = authorized.filter(p => {
+      const info = p.getInfo();
+      return info.usbVendorId === 0x0403 && info.usbProductId === 0x6015;
+    });
+    this.port = dongles.length === 1 ? dongles[0] : await navigator.serial.requestPort();
     await this.port.open({ baudRate: BAUD, bufferSize: 16384 });
     this.writer = this.port.writable.getWriter();
     this.reader = this.port.readable.getReader();
@@ -55,7 +67,7 @@ export class CytonSerial {
     }
 
     this.onStatus('Configuring channels for EMG…');
-    for (const cmd of channelConfig(this.wiring)) {
+    for (const cmd of channelConfig(this.wiring, this.activeChannels, this.channel1From7)) {
       this.text = '';
       await this.send(cmd);
       await this.waitFor('$$$', 1000);

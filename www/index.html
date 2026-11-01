@@ -81,6 +81,12 @@
         <span id="mode-pill" class="pill">Manual</span>
       </header>
 
+      <section id="session-note" hidden>
+        <h2>Right arm · 6 channels · 3 controls</h2>
+        <p class="hint">CH1–6 + separate REF and BIAS. Base rotation, reach in/out and elbow angle. Gripper stays manual; CH7–8 are disabled.</p>
+        <button class="guide-open">Today’s placement guide</button>
+      </section>
+
       <section>
         <div class="row">
           <button id="connect" class="primary wide">CONNECT EMG</button>
@@ -112,6 +118,12 @@
         </select>
         <!-- only when saving or loading the calibration fails -->
         <p class="hint" id="saved-status"></p>
+      </section>
+
+      <section>
+        <h2>Electrode placement lab</h2>
+        <p class="hint">Guided rest and movement tests. Compare channels and repeat after adjusting a site.</p>
+        <button id="isolation-open" class="primary wide">Test electrode isolation</button>
       </section>
 
       <section class="muscle-only">

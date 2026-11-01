@@ -4,3 +4,11 @@
 /calibration.json
 /calibration.tmp
 /www/models
+
+/calibration-six.json
+/calibration-six.tmp
+/__pycache__/
+
+# Local participant recording exports
+/emg-*.json
+/recordings/

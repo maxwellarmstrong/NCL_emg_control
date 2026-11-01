@@ -4,3 +4,4 @@ pub mod filter;
 pub mod finger;
 pub mod gesture;
 pub mod pipeline;
+pub mod isolation;

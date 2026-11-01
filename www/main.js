@@ -2,8 +2,15 @@ import init, { App } from './pkg/arm_sim.js';
 import { CytonSerial } from './serial.js';
 import { CytonSimulator } from './simulator.js';
 import { RoArm, SERVOS_DOWN } from './roarm.js';
+import { createIsolation } from './isolation.js';
+let isolation = null;
 
 const NUM_CH = 8;
+const SIX_SESSION = new URLSearchParams(location.search).get('session') === 'six';
+const ACTIVE_CHANNELS = SIX_SESSION ? 6 : 8;
+const CHANNEL1_FROM7 = SIX_SESSION && new URLSearchParams(location.search).get('ch1') === '7';
+const channelLabel = (ch) => CHANNEL1_FROM7 && ch === 0 ? 'CH7 (was CH1)' : CHANNEL1_FROM7 && ch === 6 ? 'CH1' : `CH${ch + 1}`;
+const CALIBRATION_URL = SIX_SESSION ? '/calibration-six' : '/calibration';
 // [+ key, − key] per joint: base, shoulder, elbow, gripper (+ opens)
 const KEYS = [['a', 'd'], ['w', 's'], ['f', 'r'], ['q', 'e']];
 // Muscle-pair gestures, in the decoder's order (see DEFAULT_MAPPING in
@@ -19,7 +26,7 @@ const GESTURES = [
   { muscle: 'Wrist extensors', short: 'Wrist back', cue: 'Pull your wrist back', how: 'knuckles up, as if revving a motorbike', anim: 'gesture-wrist-back.svg' },
   { muscle: 'Wrist flexors', short: 'Wrist curl', cue: 'Curl your wrist in', how: 'palm side toward the forearm', anim: 'gesture-wrist-curl.svg' },
   { muscle: 'Finger flexors', short: 'Grip', cue: 'Grip', how: 'close your fingers as if squeezing a ball', anim: 'gesture-grip.svg' },
-];
+].slice(0, SIX_SESSION ? 6 : 7);
 // What the muscle pairs drive (reach.rs): the reach axis takes the shoulder's
 // slot and moves the gripper tip along where it points.
 const AXES = ['Base', 'Reach', 'Elbow', 'Gripper'];
@@ -78,6 +85,13 @@ let app;
 try {
   await init();
   app = new App($('gl'));
+  app.set_six_channel_session(SIX_SESSION);
+  $('session-note').hidden = !SIX_SESSION;
+  if (SIX_SESSION) {
+    if (CHANNEL1_FROM7) $('session-note').querySelector('p').textContent = 'CH7 replaces CH1: move only the board end to bottom N7P. CH2–6, REF and BIAS stay in place. CH1 and CH8 are disabled.';
+    $('scheme').disabled = true;
+    $('gcal').title = 'Calibrate six gestures for base, reach and elbow; gripper stays manual';
+  }
 } catch (err) {
   fatal(`Could not start the renderer: ${err}`);
   throw err;
@@ -135,6 +149,10 @@ const ALL_KEYS = KEYS.flat();
 // Space is the emergency stop, wherever focus is. Captured and cancelled on both
 // key events, so it can't also press a focused button (Engage among them).
 addEventListener('keydown', (e) => {
+  if (isolation?.open) {
+    if (e.key === ' ') { e.preventDefault(); e.stopImmediatePropagation(); emergencyStop(); }
+    return;
+  }
   if (e.key !== ' ') return;
   e.preventDefault();
   e.stopImmediatePropagation();
@@ -147,6 +165,7 @@ addEventListener('keyup', (e) => {
 }, { capture: true });
 
 addEventListener('keydown', (e) => {
+  if (isolation?.open || ['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
   shift = e.shiftKey;
   if (e.ctrlKey || e.metaKey || e.altKey || e.target.tagName === 'SELECT') return;
   const k = e.key.toLowerCase();
@@ -311,7 +330,7 @@ const channels = Array.from({ length: NUM_CH }, (_, ch) => {
   const row = document.createElement('div');
   row.className = 'chan';
   row.innerHTML = `
-    <div class="chan-top"><span class="name"><b>CH${ch + 1}</b><span class="gesture"></span></span></div>
+    <div class="chan-top"><span class="name"><b>${channelLabel(ch)}</b><span class="gesture"></span></span></div>
     <div class="chan-mid"><span class="role"></span><span class="uv mono"></span></div>
     <div class="bar"><div class="fill"></div></div>`;
   $('channels').append(row);
@@ -328,6 +347,11 @@ const channels = Array.from({ length: NUM_CH }, (_, ch) => {
 function refreshRoles() {
   const learned = app.channel_gestures();
   channels.forEach((c, ch) => {
+    if (ch >= ACTIVE_CHANNELS) {
+      c.gesture.textContent = 'unused';
+      c.role.textContent = 'disabled for this session';
+      return;
+    }
     const g = learned[ch];
     c.gesture.textContent = scheme === 'finger' ? GRID[ch] : g >= 0 ? GESTURES[g].short : '';
     c.role.textContent = scheme === 'finger' ? '' : g >= 0 ? jointFor(g) : app.gesture_calibrated() ? 'helper' : 'uncalibrated';
@@ -336,7 +360,7 @@ function refreshRoles() {
 refreshRoles();
 
 /** Where a channel's electrode sits in the current scheme. */
-const siteName = (ch) => (scheme === 'finger' ? `CH${ch + 1} (grid ${GRID[ch].toLowerCase()})` : `CH${ch + 1}`);
+const siteName = (ch) => (scheme === 'finger' ? `CH${ch + 1} (grid ${GRID[ch].toLowerCase()})` : channelLabel(ch));
 
 // ---- finger grid -------------------------------------------------------------
 
@@ -450,7 +474,7 @@ function setScheme(s) {
   app.set_finger_mode(s === 'finger');
   document.body.classList.toggle('fingers', s === 'finger');
   $('scheme').value = s;
-  $('guide-img').src = s === 'finger' ? 'finger-grid.svg' : 'electrodes.svg';
+  $('guide-img').src = s === 'finger' ? 'finger-grid.svg' : CHANNEL1_FROM7 ? 'electrodes-six-ch7.svg' : SIX_SESSION ? 'electrodes-six.svg' : 'electrodes.svg';
   try { localStorage.setItem('scheme', s); } catch { /* remembering is optional */ }
   refreshRoles();
   refreshFingerStatus();
@@ -508,6 +532,8 @@ $('connect').onclick = async () => {
   }
   serial = new CytonSerial({
     wiring: 'common',
+    activeChannels: ACTIVE_CHANNELS,
+    channel1From7: CHANNEL1_FROM7,
     onData: (bytes) => app.push_serial(bytes),
     onStatus: setBci,
     onClose: () => {
@@ -519,6 +545,7 @@ $('connect').onclick = async () => {
     },
   });
   updateButtons();
+  app.set_channel1_from7(CHANNEL1_FROM7);
   app.reset_stream();
   try {
     await serial.connect();
@@ -539,6 +566,7 @@ $('simulate').onclick = () => {
     setSource('manual');
     setBci('');
   } else {
+    app.set_channel1_from7(false);
     app.reset_stream();
     sim = new CytonSimulator();
     setSource('emg');
@@ -701,6 +729,11 @@ function pumpSimulator(now) {
   if (kind === 'gesture') {
     simDrive.gesture.forEach((v, g) => { levels[g] = v; });
     levels[SIM_FINGER_EXTENSORS] = Math.max(levels[SIM_FINGER_EXTENSORS], levels[GRIP] * SIM_GRIP_BRACE);
+  }
+  if (isolation?.open) {
+    levels.fill(0);
+    const channel = isolation.demoChannel();
+    if (channel >= 0) levels[channel] = 0.35;
   }
   levels.forEach((v, ch) => sim.setLevel(ch, v));
   const bytes = sim.pump(now);
@@ -1287,9 +1320,9 @@ function updateUi(now) {
   const recording = cal.length > 0 && cal[2] === PHASE.RECORD && cal[0] !== FSTEP.TRAIN;
   channels.forEach((c, ch) => {
     c.fill.style.width = `${act[ch] * 100}%`;
-    c.uv.textContent = contact[ch] ? `${env[ch].toFixed(1)}µV` : 'off';
+    c.uv.textContent = ch >= ACTIVE_CHANNELS ? 'disabled' : contact[ch] ? `${env[ch].toFixed(1)}µV` : 'off';
     c.row.classList.toggle('nocontact', !contact[ch]);
-    c.row.title = contact[ch]
+    c.row.title = ch >= ACTIVE_CHANNELS ? 'Unused input: disabled in acquisition and processing' : contact[ch]
       ? siteName(ch)
       : `${siteName(ch)}: no contact (input railed). Press the electrode down or re-gel it.`;
     c.row.classList.toggle('calibrating', recording);
@@ -1329,9 +1362,12 @@ function frame(now) {
   }
   driveGripper();
   if (sim) pumpSimulator(now);
-  trackArm();
-  app.frame(dt);
-  roarm?.update(app.joint_angles(), dt);
+  isolation?.tick(now);
+  if (!isolation?.open) {
+    trackArm();
+    app.frame(dt);
+    roarm?.update(app.joint_angles(), dt);
+  }
   drawCoach(now);
   drawIntent();
 
@@ -1490,7 +1526,7 @@ async function saveCalibration() {
   autosave = true; // a finished calibration is worth keeping even if the old file was unreadable
   const body = JSON.stringify({ settings: panelSettings(), calibration: toBase64(app.export_calibration()) });
   try {
-    const res = await fetch('/calibration', { method: 'PUT', body });
+    const res = await fetch(CALIBRATION_URL, { method: 'PUT', body });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     setSaved('');
   } catch (err) {
@@ -1509,7 +1545,7 @@ $('app').addEventListener('input', saveSoon);
 async function loadCalibration() {
   let saved;
   try {
-    const res = await fetch('/calibration');
+    const res = await fetch(CALIBRATION_URL);
     if (res.status === 404) {
       autosave = true;
       return;
@@ -1527,10 +1563,19 @@ async function loadCalibration() {
   autosave = true;
 }
 
+isolation = createIsolation({
+  app, channels: ACTIVE_CHANNELS, labels: Array.from({length:ACTIVE_CHANNELS}, (_,i)=>channelLabel(i)),
+  physicalChannels: Array.from({length:ACTIVE_CHANNELS},(_,i)=>i===0&&CHANNEL1_FROM7?7:i+1),
+  connected: streaming, isDemo: () => Boolean(sim),
+  onOpen: () => { emergencyStop(); stopCalibration(); held.clear(); app.hold_gripper(); },
+  onClose: () => { held.clear(); app.hold_gripper(); },
+});
+$('isolation-open').onclick = () => isolation.show();
+
 setSource('manual');
 let savedScheme = 'muscle';
 try { savedScheme = localStorage.getItem('scheme') === 'finger' ? 'finger' : 'muscle'; } catch { /* default */ }
-setScheme(savedScheme);
+setScheme(SIX_SESSION ? 'muscle' : savedScheme);
 updateButtons();
 loadCalibration();
 loadArmMeshes();
