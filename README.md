@@ -39,6 +39,10 @@ command is needed. Select **Synthetic demo** to try the complete recording workf
 without electrodes or camera access. For real data, connect the Cyton, enable the
 camera, and capture open and closed calibration poses before recording.
 
+Open the app through that HTTP address, rather than double-clicking
+`www/acquire/index.html`. A direct HTML file now shows a styled preview and a
+launch link; recording, camera tracking and live controls require the local server.
+
 The server binds to this computer's loopback address. Raw EMG and landmarks are
 saved under `data/sessions/`; camera video is not saved. Recordings, generated
 artifacts, downloaded models and installed dependencies are excluded from Git.

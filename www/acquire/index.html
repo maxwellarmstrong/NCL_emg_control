@@ -1,6 +1,16 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Neuromotion · Acquisition lab</title><link rel="stylesheet" href="/assets/style.css"><link rel="stylesheet" href="/assets/storage.css"></head>
+<title>Neuromotion · Acquisition lab</title>
+<script>
+// A directly opened HTML file can show the design and launch instructions, but
+// acquisition needs the local HTTP server. File URLs cannot load the module graph.
+for (const name of ['style.css', 'storage.css']) {
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = (location.protocol === 'file:' ? './' : '/assets/') + name;
+  document.head.append(link);
+}
+</script></head>
 <body>
 <header class="topbar"><a class="brand" href="/">N<span>↗</span> <b>NEUROMOTION</b><small>RESEARCH WORKSPACE</small></a><nav><a class="selected" href="#live">Acquisition</a><a href="#recordings">Recordings</a><a href="/arm/" target="_blank" rel="noopener">Arm simulator ↗</a></nav><span class="local"><i></i> LOCAL ONLY</span></header>
 <main>
@@ -19,4 +29,40 @@
 <div class="storage-box"><strong>Saved on this computer</strong><code id="storage-path">Checking recording directory…</code><p>Saving writes directly to this folder. Download ZIP creates a separate browser download; the original stays here. Archives include file checksums for verification.</p><div class="storage-actions"><a id="backup-all" href="/api/export">Download completed recordings</a><button id="import-placement" class="light">Import placement-lab JSON</button><input id="placement-file" type="file" accept=".json,application/json" hidden></div><small>Placement imports retain movement cues and channel mappings. They do not become camera-measured finger labels. Import uses the participant code above.</small><p id="import-status" role="status"></p></div>
 <div id="session-list"><p>No recordings yet.</p></div></section>
 <footer><span>NEUROMOTION / EXPERIMENTAL TOOLING</span><span>200 ms windows · 50 ms updates · five finger targets</span></footer>
-</main><script type="module" src="/assets/app.js?v=2"></script></body></html>
+</main>
+<script>
+function showLaunchMessage(filePreview) {
+  document.getElementById('state').textContent = filePreview ? 'File preview' : 'App could not start';
+  document.getElementById('server').textContent = 'Use the local recorder to connect and save data.';
+  const notice = document.getElementById('notice');
+  notice.replaceChildren();
+  const title = document.createElement('strong');
+  title.textContent = filePreview ? 'This is an HTML preview. ' : 'The app files could not load. ';
+  const link = document.createElement('a');
+  link.href = 'http://localhost:8081/';
+  link.textContent = 'Open the running acquisition app ↗';
+  const command = document.createElement('code');
+  command.textContent = 'powershell -File scripts/start-lab.ps1';
+  notice.append(title, link, document.createElement('br'),
+    'If the app is not running, start it from the project folder: ', command);
+  document.querySelectorAll('button, input, select').forEach(control => control.disabled = true);
+  document.getElementById('storage-path').textContent = 'The running app will show your local recording directory.';
+  document.getElementById('backup-all').removeAttribute('href');
+  document.getElementById('backup-all').setAttribute('aria-disabled', 'true');
+  if (filePreview) {
+    document.querySelector('.brand').href = link.href;
+    document.querySelectorAll('nav a').forEach(item => {
+      item.href = new URL(item.getAttribute('href'), link.href).href;
+    });
+  }
+}
+if (location.protocol === 'file:') {
+  showLaunchMessage(true);
+} else {
+  const app = document.createElement('script');
+  app.type = 'module';
+  app.src = '/assets/app.js?v=3';
+  app.onerror = () => showLaunchMessage(false);
+  document.body.append(app);
+}
+</script></body></html>
