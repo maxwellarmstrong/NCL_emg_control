@@ -10,7 +10,15 @@
   <main id="app">
     <div id="view">
       <canvas id="gl"></canvas>
-      <div id="hud">Drag to orbit · scroll to zoom</div>
+      <section id="scene-hud" aria-label="RoArm motion viewer">
+        <header><strong>RoArm-M2-S</strong><span>Motion viewer</span></header>
+        <p id="scene-mode">Manual control</p>
+        <p class="scene-coords" id="scene-coords">Tool position · mm</p>
+        <p><i class="path-swatch"></i> Simulated tool path</p>
+        <p id="scene-offset" hidden></p>
+        <div class="scene-actions"><button id="scene-mark">Mark reference</button><button id="scene-camera">Reset view</button></div>
+      </section>
+      <div id="hud"><button id="scene-focus" aria-controls="panel" aria-pressed="false">Expand view</button><small>Drag to orbit · scroll to zoom</small></div>
       <div id="intent" hidden>
         <div class="what"></div>
         <div class="where"></div>

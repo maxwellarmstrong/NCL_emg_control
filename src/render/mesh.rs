@@ -83,18 +83,20 @@ pub fn stl(bytes: &[u8]) -> Result<Vec<f32>, String> {
     Ok(v)
 }
 
-/// Ground grid in the XZ plane as GL_LINES.
-pub fn grid(half: f32, step: f32) -> Vec<f32> {
-    let mut v = Vec::new();
-    let n = (half / step).round() as i32;
-    for i in -n..=n {
-        let c = i as f32 * step;
-        push(&mut v, Vec3::new(c, 0.0, -half), Vec3::Y);
-        push(&mut v, Vec3::new(c, 0.0, half), Vec3::Y);
-        push(&mut v, Vec3::new(-half, 0.0, c), Vec3::Y);
-        push(&mut v, Vec3::new(half, 0.0, c), Vec3::Y);
+/// Unit cone centred on Y, with the point at +0.5 (tool-frame arrowhead).
+pub fn arrowhead(segments: u32) -> Vec<f32> {
+    let mut vertices = Vec::new();
+    for i in 0..segments {
+        let ring = |j: u32| {
+            let (s, c) = (std::f32::consts::TAU * j as f32 / segments as f32).sin_cos();
+            Vec3::new(c, -1.0, s) * 0.5
+        };
+        let (a, b, tip) = (ring(i), ring(i + 1), Vec3::Y * 0.5);
+        let n = (tip - a).cross(b - a).normalize();
+        for v in [a, tip, b] { push(&mut vertices, v, n); }
+        for v in [a, b, -tip] { push(&mut vertices, v, Vec3::NEG_Y); }
     }
-    v
+    vertices
 }
 
 pub struct GpuMesh {

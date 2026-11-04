@@ -9,10 +9,10 @@ use crate::world::{World, BOX_SIZE};
 
 pub type Color = [f32; 4];
 
-pub const BODY: Color = [0.80, 0.82, 0.85, 1.0];
-pub const GRAPHITE: Color = [0.17, 0.19, 0.22, 1.0];
-pub const ACCENT: Color = [0.20, 0.85, 1.00, 1.0];
-pub const JAW: Color = [0.33, 0.89, 0.65, 1.0];
+pub const BODY: Color = [0.24, 0.28, 0.31, 1.0];
+pub const GRAPHITE: Color = [0.15, 0.17, 0.18, 1.0];
+pub const ACCENT: Color = [0.27, 0.47, 0.58, 1.0];
+pub const JAW: Color = [0.25, 0.42, 0.52, 1.0];
 pub const CRATE: Color = [0.95, 0.80, 0.25, 1.0];
 pub const CRATE_BAND: Color = [0.70, 0.36, 0.07, 1.0];
 
@@ -69,7 +69,7 @@ pub fn arm_parts(arm: &Arm, meshes: bool) -> Vec<Part> {
         mix(base, ACCENT, t * 0.7)
     };
     let frames = [f.base, f.link1, f.link2, f.link3, f.gripper];
-    let colors = [GRAPHITE, glow(0, BODY), glow(1, BODY), glow(2, BODY), glow(3, JAW)];
+    let colors = [GRAPHITE, glow(0, BODY), glow(1, [0.55, 0.57, 0.58, 1.0]), glow(2, BODY), glow(3, JAW)];
     if meshes {
         return frames
             .iter()

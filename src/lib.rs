@@ -141,6 +141,13 @@ impl App {
         self.camera.zoom(delta);
     }
 
+    /// Capture a display-only reference. It never enters the motion controller.
+    pub fn mark_view_reference(&mut self, enabled: bool) {
+        self.renderer.reference = enabled.then(|| self.arm.frames().tool);
+    }
+
+    pub fn reset_camera(&mut self) { self.camera = OrbitCamera::default(); }
+
     /// Advance the simulation by `dt` seconds and draw a frame.
     pub fn frame(&mut self, dt: f32) {
         let dt = dt.clamp(0.0, 0.1);

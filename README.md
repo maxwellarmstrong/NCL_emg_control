@@ -10,6 +10,20 @@ forward and back, the elbow bends the forearm, and the fourth joint opens and
 closes the gripper. Kinematics, rendering (WebGL2) and the EMG signal chain are Rust
 compiled to WASM; the page talks to the Cyton dongle directly via Web Serial.
 
+## RoArm motion viewer
+
+Open `http://127.0.0.1:8768/?session=six&view=scene` for an expanded view.
+The scene adapts the EECS106A HW7 visualizer's grid, directional shadows, tool
+frame and path display to the live RoArm joint chain. The blue line follows the
+simulated tool point; red, green and blue arrows mark its local X, Y and Z.
+The position readout uses robot-base coordinates in millimetres (Z up).
+**Mark reference** leaves a gray frame at the current simulated tool pose and
+reports the straight-line distance from it. This is a visual marker, not an IK
+target or a command to hardware. Drag to orbit, scroll to zoom, or **Reset view**
+to restore the camera without moving the arm. **Show controls** opens the normal
+EMG and calibration panel. The scene uses the existing WASM renderer and Waveshare
+link meshes; it does not require Swift or a running homework notebook.
+
 ## Local six-channel session (right arm)
 
 Open `http://127.0.0.1:8768/?session=six` for today's configuration:

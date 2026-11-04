@@ -106,6 +106,22 @@ const jointName = (j) => (j >= 0 ? names[j] : 'off');
 // ---- view: sizing, orbit, zoom ---------------------------------------------
 
 const canvas = $('gl');
+// Scene annotations only: these controls never send joints or targets to the arm.
+let viewReference = null;
+function setSceneFocus(enabled) {
+  document.body.classList.toggle('scene-focus', enabled);
+  $('scene-focus').setAttribute('aria-pressed', String(enabled));
+  $('scene-focus').textContent = enabled ? 'Show controls' : 'Expand view';
+}
+setSceneFocus(new URLSearchParams(location.search).get('view') === 'scene');
+$('scene-focus').onclick = () => setSceneFocus(!document.body.classList.contains('scene-focus'));
+$('scene-camera').onclick = () => app.reset_camera();
+$('scene-mark').onclick = () => {
+  viewReference = viewReference ? null : Array.from(app.end_effector());
+  app.mark_view_reference(viewReference !== null);
+  $('scene-mark').textContent = viewReference ? 'Clear reference' : 'Mark reference';
+  $('scene-offset').hidden = !viewReference;
+};
 new ResizeObserver(() => {
   const dpr = Math.min(devicePixelRatio, 2);
   app.resize(Math.round(canvas.clientWidth * dpr), Math.round(canvas.clientHeight * dpr));
@@ -1299,6 +1315,12 @@ streamChart.addEventListener('pointerleave', () => {
 });
 
 function updateUi(now) {
+  const [x, up, back] = app.end_effector();
+  // Renderer is Y-up; display the robot base axes (Z up), in millimetres.
+  $('scene-coords').textContent = `X ${Math.round(1000*x)}   Y ${Math.round(-1000*back)}   Z ${Math.round(1000*up)} mm`;
+  $('scene-mode').textContent = roarm?.following ? 'Simulation command · hardware following' :
+    source === 'emg' ? (sim ? 'Simulated EMG control' : 'Live EMG control') : 'Manual control';
+  if (viewReference) $('scene-offset').textContent = `Gray reference · ${(1000*Math.hypot(x-viewReference[0], up-viewReference[1], back-viewReference[2])).toFixed(1)} mm away`;
   const angles = app.joint_angles();
   // with a real Cyton streaming, EMG drives the arm joints and their buttons do nothing
   const emgDriven = source === 'emg' && !sim;

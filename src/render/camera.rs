@@ -10,7 +10,7 @@ pub struct OrbitCamera {
 impl Default for OrbitCamera {
     fn default() -> Self {
         // In front of the arm and to its right, looking slightly down.
-        Self { yaw: 1.05, pitch: 0.38, distance: 1.05, target: Vec3::new(0.12, 0.18, 0.0) }
+        Self { yaw: -0.42, pitch: 0.27, distance: 0.95, target: Vec3::new(0.045, 0.18, 0.0) }
     }
 }
 

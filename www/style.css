@@ -344,3 +344,22 @@ body.fingers .chan button { visibility: hidden; }
 .iso-selected { background:#17333f; }
 .isolation [hidden] { display:none !important; }
 @media(max-width:760px) { .iso-layout { grid-template-columns:1fr; } .isolation { padding:16px; } #iso-timer { font-size:30px; } }
+
+/* Motion view: calibrated in metres in the scene, displayed in robot-base mm. */
+#scene-hud { position:absolute; top:14px; left:14px; color:#f4f4f4; background:rgba(29,29,29,.91);
+  border-radius:12px; padding:13px 15px; font:12px/1.5 ui-monospace,monospace; max-width:calc(100% - 140px); }
+#scene-hud header { display:flex; gap:12px; align-items:baseline; }
+#scene-hud strong { font-size:15px; } #scene-hud header span { color:#bbb; }
+#scene-hud p { margin:5px 0; } .scene-coords { white-space:pre-wrap; font-variant-numeric:tabular-nums; }
+.path-swatch { display:inline-block; width:19px; height:3px; vertical-align:middle; background:#1f78b5; }
+.scene-actions { display:flex; gap:5px; margin-top:9px; }
+#scene-hud button,#hud button { padding:5px 9px; color:#eee; background:#373737; border:1px solid #555; }
+#hud { pointer-events:auto; display:grid; justify-items:end; gap:4px; color:white; }
+#hud small { color:#fff; text-shadow:0 1px 3px #222; pointer-events:none; }
+#intent { top:auto; bottom:190px; }
+body.scene-focus #panel { display:none; }
+@media(max-width:760px){ #panel{width:min(310px,47vw)} #scene-hud{max-width:calc(100% - 24px);left:8px;top:44px}
+  #hud small{display:none} #hud {top:6px;right:8px} #scene-hud header span{display:none}
+  #jgrid{grid-template-columns:repeat(4,minmax(32px,1fr))} #manual{max-width:95%;left:5px;padding:5px} }
+
+@media(max-width:760px){body.scene-focus #scene-hud{top:8px;max-width:calc(100% - 116px)} }
