@@ -13,7 +13,7 @@ experiment plan.
 | Area | Implementation |
 |---|---|
 | Acquisition web app | Eight-channel EMG traces; Cyton Web Serial connection; 250 Hz and 2 kHz synthetic streams; guided movement cues; recording controls and session library |
-| Camera supervision | Locally hosted MediaPipe hand tracking in a worker; open/closed calibration; five continuous flexion labels; raw landmarks and label-quality flags |
+| Camera supervision | Local hand + arm tracking in a worker; shoulder/elbow/wrist overlay and arm angles; open/closed finger calibration; independent hand/arm quality flags |
 | Local recorder | FastAPI backend; raw EMG, timestamps, landmarks, calibration and settings saved to disk; retry-safe batches; ZIP export; train/validation/test assignment per recording |
 | Biosignal preprocessing | Shared causal Butterworth SOS filters in Python and JavaScript; optional narrow mains notch; startup, gap, clipping and suspicious-timing exclusion |
 | CNN and baselines | Temporal CNN with continuous flexion, simultaneous activation and isolated-finger classification heads; training-only normalization; session-separated evaluation; LDA and random-forest baselines |
@@ -38,6 +38,20 @@ Open <http://localhost:8081> in **Chrome or Edge**. On subsequent runs, only the
 command is needed. Select **Synthetic demo** to try the complete recording workflow
 without electrodes or camera access. For real data, connect the Cyton, enable the
 camera, and capture open and closed calibration poses before recording.
+
+Keep your **shoulder, elbow, wrist and fingers** in frame and select **Side**.
+The camera now runs Hand Landmarker and Pose Landmarker Lite on the same frame.
+It displays elbow flexion (0° = straight) and the upper-arm angle relative to the
+torso when the hip is visible. Arm tracking works without finger calibration;
+occluded arms are marked unavailable. Both version-1 models are downloaded by
+`scripts/download_models.py`. After updating an existing installation, rerun that
+script, restart the recorder, and reload the browser.
+
+Arm landmarks, visibility scores and angles are saved in the `arm` object of each
+`vision.jsonl` frame, with validity independent of the finger label. These are
+monocular estimates, not calibrated motion capture. The CNN still predicts five
+finger targets; arm-output training and forearm pronation/supination are future
+work. See [camera measurements](RESEARCH.md#arm-tracking).
 
 Open the app through that HTTP address, rather than double-clicking
 `www/acquire/index.html`. A direct HTML file now shows a styled preview and a
@@ -92,6 +106,20 @@ software passband is not a flat hardware response. Filter diagnostics include
 the nominal ADC response identified in the placement branch's research.
 [TI ADS1299 datasheet](https://www.ti.com/lit/ds/symlink/ads1299.pdf)
 
+Each waveform now has **positive, zero and negative µV ticks**. **Shared auto** is
+the default so channel amplitudes are comparable. Choose **Fixed** to hold one
+range across channels, or **Auto · each channel** to inspect weaker signals.
+Off-scale traces are flagged and clipped within their own row; changing the
+axis never changes recordings or CNN input. Min/max plotting preserves brief
+peaks instead of skipping every Nth sample.
+
+Segmentation retains **200 ms trailing windows / 50 ms scheduled hops**. Counter
+gaps, time gaps, clipping and uncertain timing reset preprocessing; a full second
+of clean recovery is excluded. The live predictor and dataset builder use the
+same rules. Amber traces show settling and paths break at rejected/missing data.
+Long acquisition gaps no longer emit duplicate windows from stale samples. Rebuild
+datasets and retrain existing models to use preprocessing version 2.
+
 ### Build datasets and train
 
 Record complete, calibrated sessions assigned to each of **Training**, **Validation**
@@ -107,6 +135,11 @@ rejects invalid signal/label intervals. Whole recordings remain in one split;
 overlapping windows must never be randomly divided across splits. Synthetic
 recordings are excluded by default. Reload the app after training to enable
 **Compare a trained CNN**. Predictions are displayed but do not drive an actuator.
+
+Add `--require-arm` to the dataset command when every finger-training window must
+also have valid arm tracking. This rejects arm occlusions across the whole window
+and excludes older recordings without arm data; it does not add arm prediction
+targets. Leave it off for existing finger-only recordings.
 
 For RL infrastructure experiments:
 
@@ -141,6 +174,22 @@ tests**, adding verified backup/restore, placement import and wiring checks.
 Compatibility was also checked against the placement branch's own JavaScript
 record validator. See [integration validation](docs/INTEGRATION.md#validation).
 
+The arm/plot follow-up passed **38 Python tests and nine JavaScript tests**,
+including browser/SciPy parity across counter gaps, time gaps and clipping;
+occlusion-aware segmentation; arm-frame persistence; angle geometry; numeric
+axis scaling; and peak-preserving plot bins. Both local camera models ran in
+Chrome against a blank frame and Google's pose test photo, detecting both arms
+in the latter. Browser checks covered the three scale modes.
+Optional positive pose detection can be reproduced with:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/download_models.py --test-fixtures
+```
+
+Then open <http://localhost:8081/assets/vision-smoke.html> and choose **Check official
+pose fixture**. The test photo is downloaded from Google's MediaPipe test assets,
+verified against its upstream SHA-256, and ignored by Git.
+
 **Real Cyton acquisition, real camera-label quality, human decoding accuracy, and
 end-to-end latency still need validation.** Timestamps are browser-clock estimates,
 not hardware synchronization. Next steps are to collect separate real sessions,
@@ -150,7 +199,7 @@ then integrate the frozen decoder into simulation for RL experiments.
 ### Research code map
 
 ```text
-www/acquire/              acquisition UI, packet parser, live filters, hand tracker
+www/acquire/              acquisition UI, packet parser, live filters, hand + arm trackers
 emg_research/server.py    local recording/export and prediction API
 emg_research/signal.py    filter profiles and causal preprocessing
 emg_research/dataset.py   alignment, quality checks and training windows

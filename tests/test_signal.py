@@ -69,3 +69,29 @@ console.log(JSON.stringify(data.x.map(row=>filter.process(row))));"""
     result = subprocess.run(['node','--input-type=module','-e',script],cwd=root,
         input=json.dumps({'sos':config.sos().tolist(),'x':x.tolist()}),text=True,capture_output=True,check=True)
     np.testing.assert_allclose(json.loads(result.stdout), StreamingFilter(config).process(x),atol=1e-8)
+
+
+@pytest.mark.parametrize('rate', [250, 2000])
+def test_browser_and_dataset_segment_quality_match(rate):
+    import json
+    import subprocess
+    from pathlib import Path
+    config = FilterConfig.for_rate(rate)
+    n = rate * 6
+    indices = np.arange(n)
+    indices[rate*2:] += 12
+    times = indices * 1000 / rate
+    times[rate*4:] += 800  # Time discontinuity even though the counter is consecutive.
+    bad = np.zeros(n, dtype=bool)
+    bad[rate+3:rate+7] = True
+    x = np.random.default_rng(2).normal(size=(n,8))*50+1000
+    rows = [dict(index=int(i),t_ms=float(t),uv=v.tolist(),clipped=bool(b)) for i,t,v,b in zip(indices,times,x,bad)]
+    script = """import fs from 'node:fs';import {SignalProcessor} from './www/acquire/core.js';
+const d=JSON.parse(fs.readFileSync(0,'utf8'));const p=new SignalProcessor(d.profile);
+console.log(JSON.stringify(d.rows.map(row=>p.process(row))));"""
+    result = subprocess.run(['node','--input-type=module','-e',script],cwd=Path(__file__).resolve().parents[1],
+        input=json.dumps({'profile':config.describe(),'rows':rows}),text=True,capture_output=True,check=True)
+    browser = json.loads(result.stdout)
+    filtered, valid = filter_segments(x, indices, config, times, bad)
+    np.testing.assert_allclose([r['values'] for r in browser],filtered,atol=1e-8)
+    np.testing.assert_array_equal([r['valid'] for r in browser],valid)

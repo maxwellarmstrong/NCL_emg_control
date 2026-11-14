@@ -1,11 +1,11 @@
 import {CytonSerial} from '/arm/serial.js';
-import {CytonParser, SOSFilter, FINGERS, fingerAngles, calibratedFlexion, syntheticFlexion, median} from './core.js?v=2';
+import {CytonParser, SignalProcessor, channelScales, waveformBins, armMeasurement, FINGERS, fingerAngles, calibratedFlexion, syntheticFlexion, median} from './core.js?v=4';
 
 const $ = id => document.getElementById(id);
 const settings = ['source','rate','wiring','mains'];
-let profile, filter, parser, serial, running = false, sourceStarted = 0, generated = 0;
-let storageReady = false;
-let sampleCount = 0, packetGaps = 0, lastIndex = null, settleUntil = 0, lastSampleTime = 0;
+let profile, processor, parser, serial, running = false, sourceStarted = 0, generated = 0;
+let storageReady = false, visionReady = false;
+let sampleCount = 0, packetGaps = 0, lastIndex = null, lastSampleTime = 0;
 let plot = [], filteredWindow = [], latestVision = null, prediction = null, predictionBusy = false;
 let cameraStream, worker, cameraReady = false, frameBusy = false, frameHandle, frameFallback;
 let calibration = {open:null,closed:null}, angleHistory = [], previousAngles = null;
@@ -14,6 +14,7 @@ let sessionId = null, recording = false, recordedAt = 0, savedCounts = null, bat
 let pending = {emg:[],vision:[],events:[]};
 let prompting = false, promptStarted = 0, lastCue = -1;
 let lastStatsAt = performance.now(), lastStatsSamples = 0, lastPredictAt = 0;
+let lastPlotAt = -Infinity, lastScaleAt = -Infinity, scales = Array(8).fill(100);
 const cues = ['Rest · relax every finger','Thumb · slowly flex and extend','Index · slowly flex and extend',
   'Middle · slowly flex and extend','Ring · slowly flex and extend','Little · slowly flex and extend',
   'Thumb + index · move together','Middle + ring + little · move together'];
@@ -31,7 +32,7 @@ function updateControls() {
   $('rate').disabled ||= $('source').value==='cyton';
   $('connect').textContent=running?'Disconnect source':$('source').value==='cyton'?'Connect Cyton':'Start synthetic stream';
   $('connect').disabled=!!sessionId;
-  $('camera').disabled=!!sessionId;
+  $('camera').disabled=!!sessionId||!visionReady;
   $('import-placement').disabled=!!sessionId||!storageReady;
   if(sessionId) $('open-cal').disabled=$('closed-cal').disabled=true;
   $('record').disabled=!running&&!sessionId;
@@ -45,7 +46,7 @@ function updateControls() {
 async function configure() {
   if ($('source').value==='cyton') $('rate').value='250';
   profile=await api(`/api/filter?rate=${$('rate').value}&mains=${$('mains').value}`);
-  filter=new SOSFilter(profile.sos); parser=new CytonParser(profile.sample_rate_hz);
+  processor=new SignalProcessor(profile); parser=new CytonParser(profile.sample_rate_hz);
   plot=[]; filteredWindow=[]; latestVision=null;
   if(!cameraStream) {
     $('camera-empty').querySelector('strong').textContent='A second view of the signal';
@@ -59,19 +60,16 @@ settings.forEach(id=>$(id).addEventListener('change',()=>configure().catch(e=>no
 
 function acceptSamples(samples) {
   for (const sample of samples) {
-    if (lastIndex===null||sample.index!==lastIndex+1) {
-      if(lastIndex!==null) packetGaps+=Math.max(0,sample.index-lastIndex-1);
-      filter.reset(); filteredWindow=[]; settleUntil=sample.t_ms+1000;
-    }
+    if(lastIndex!==null) packetGaps+=Math.max(0,sample.index-lastIndex-1);
     lastIndex=sample.index; lastSampleTime=sample.t_ms; sampleCount++;
-    const filtered=filter.process(sample.uv);
-    if(sample.clipped||sample.timing_uncertain) { filteredWindow=[]; settleUntil=sample.t_ms+1000; }
-    plot.push({t:sample.t_ms,values:filtered});
-    if(sample.t_ms>=settleUntil) filteredWindow.push(filtered);
+    const point=processor.process(sample);
+    plot.push(point);
+    if(!point.valid||point.gap) {filteredWindow=[];prediction=null;}
+    if(point.valid) filteredWindow.push(point.values);
     if(recording) pending.emg.push(sample);
   }
-  const max=profile.sample_rate_hz*3;
-  if(plot.length>max) plot.splice(0,plot.length-max);
+  const first=plot.findIndex(p=>p.t>=lastSampleTime-3000);
+  if(first>0)plot.splice(0,first);
   const window=profile.sample_rate_hz*.2;
   if(filteredWindow.length>window) filteredWindow.splice(0,filteredWindow.length-window);
   $('clock-quality').textContent=$('source').value==='synthetic'?'Synthetic sample clock':samples.some(s=>s.timing_uncertain)?'Timing uncertain · finish and reconnect':'Reconstructed · timing offset unmeasured';
@@ -99,6 +97,7 @@ function synthTick() {
     syntheticVisionAt=now;
     acceptVision({t_ms:now,processed_ms:now,valid:true,reason:'synthetic ground truth',flexion:syntheticFlexion((now-sourceStarted)/1000)});
     $('vision-pill').textContent='SYNTHETIC'; $('vision-status').textContent='Generated labels for pipeline testing. These are not camera measurements.';
+    $('arm-status').textContent='Synthetic demo has no measured arm pose.';
   }
 }
 setInterval(synthTick,20);
@@ -144,9 +143,10 @@ function acceptVision(frame) {
 }
 function handleVision(data) {
   frameBusy=false;
-  if(data.type==='ready') {cameraReady=true;$('vision-status').textContent='Tracker ready. Show the selected hand, then capture open and closed poses.';return;}
-  if(data.type==='error') {notice(`Hand tracker: ${data.message}`,true);cameraReady=false;return;}
+  if(data.type==='ready') {cameraReady=true;$('vision-status').textContent='Hand + arm trackers ready. Keep your shoulder, elbow, wrist and fingers in view.';return;}
+  if(data.type==='error') {notice(`Video tracker: ${data.message}`,true);cameraReady=false;return;}
   if(data.type!=='result')return;
+  const arm=armMeasurement(data.pose_landmarks,data.pose_world,$('hand').value);
   const matches=data.handedness.map((h,i)=>({h:h[0],i})).filter(({h})=>h.categoryName===$('hand').value);
   let reason='no selected hand', angles=null, landmarks=null, world=null, score=null;
   if(matches.length===1) {
@@ -154,6 +154,11 @@ function handleVision(data) {
     landmarks=data.landmarks[i].map(p=>[p.x,p.y,p.z]);world=data.world[i].map(p=>[p.x,p.y,p.z]);
     angles=fingerAngles(world);
     reason=!angles?'degenerate geometry':landmarks.some(p=>p[0]<.02||p[0]>.98||p[1]<.02||p[1]>.98)?'hand crosses frame edge':score<.6?'ambiguous handedness':'ok';
+    if(reason==='ok'&&arm.valid) {
+      const wrist=arm.landmarks[$('hand').value==='Left'?15:16];
+      const aspect=$('video').videoWidth/($('video').videoHeight||480);
+      if(Math.hypot((wrist[0]-landmarks[0][0])*aspect,wrist[1]-landmarks[0][1])>.18)reason='hand / arm wrist mismatch';
+    }
     if(reason==='ok'&&previousAngles&&data.t_ms-previousAngles.t<150&&angles.some((v,i)=>Math.abs(v-previousAngles.values[i])>65))reason='implausible angle jump';
     if(angles) previousAngles={t:data.t_ms,values:angles};
     if(reason==='ok') {
@@ -166,11 +171,14 @@ function handleVision(data) {
   if(reason==='ok'&&!flexion)reason='open / closed calibration needed';
   const valid=reason==='ok';
   acceptVision({t_ms:data.t_ms,processed_ms:performance.now(),media_time_s:data.media_time_s,valid,reason,
-    flexion,angles,landmarks,world_landmarks:world,handedness_score:score});
+    flexion,angles,landmarks,world_landmarks:world,handedness_score:score,arm});
   $('vision-pill').textContent=valid?'TRACKING':'CHECK LABEL';$('vision-pill').classList.toggle('live',valid);
   $('vision-status').textContent=valid?`Calibrated visual label · ${skippedFrames} frames skipped while tracker was busy`:`Label unavailable: ${reason}`;
   $('open-cal').disabled=!angles||!!sessionId;$('closed-cal').disabled=!angles||!!sessionId;
-  drawHand(landmarks);
+  $('arm-status').textContent=arm.valid?`${arm.side} shoulder → elbow → wrist tracked`:`Arm unavailable: ${arm.reason}`;
+  $('elbow-angle').textContent=arm.valid?`${Math.round(arm.elbow_flexion_deg)}°`:'—';
+  $('shoulder-angle').textContent=arm.upper_arm_to_torso_deg===null?'—':`${Math.round(arm.upper_arm_to_torso_deg)}°`;
+  drawHand(landmarks,arm);
 }
 async function sendCameraFrame(now, metadata={}) {
   if(!cameraStream)return;
@@ -189,6 +197,8 @@ async function stopCamera() {
   clearInterval(frameFallback);
   cameraStream?.getTracks().forEach(track=>track.stop());cameraStream=null;
   worker?.terminate();worker=null;cameraReady=false;frameBusy=false;
+  latestVision=null;drawHand(null);$('elbow-angle').textContent=$('shoulder-angle').textContent='—';
+  $('arm-status').textContent='Camera off. Keep shoulder, elbow and wrist in view when enabled.';
   $('video').srcObject=null;$('camera-empty').hidden=false;$('camera').textContent='Enable camera';
   $('vision-pill').textContent='OFFLINE';
   $('open-cal').disabled=$('closed-cal').disabled=true;
@@ -202,8 +212,8 @@ $('camera').onclick=async()=>{
     calibration={open:null,closed:null};angleHistory=[];previousAngles=null;skippedFrames=0;
     $('open-cal').textContent='Capture open hand';$('closed-cal').textContent='Capture closed hand';
     $('camera-empty').hidden=true;$('camera').textContent='Disable camera';
-    $('vision-status').textContent='Loading local hand tracker…';
-    worker=new Worker('/assets/vision-worker.js?v=2');
+    $('vision-status').textContent='Loading local hand and arm trackers…';
+    worker=new Worker('/assets/vision-worker.js?v=4');
     worker.onmessage=({data})=>handleVision(data);
     worker.onerror=e=>{cameraReady=false;frameBusy=false;notice(`Tracker failed: ${e.message}. Run scripts/download_models.py.`,true);};
     worker.postMessage({type:'init'});
@@ -212,7 +222,7 @@ $('camera').onclick=async()=>{
     event('camera_started');
   }catch(e){await stopCamera();notice(`Camera: ${e.message}`,true);}
 };
-$('hand').onchange=()=>{calibration={open:null,closed:null};angleHistory=[];previousAngles=null;notice('Hand selection changed. Capture both calibration poses again.');};
+$('hand').onchange=()=>{calibration={open:null,closed:null};angleHistory=[];previousAngles=null;latestVision=null;drawHand(null);$('elbow-angle').textContent=$('shoulder-angle').textContent='—';notice('Side selection changed. Capture both hand calibration poses again.');};
 for(const pose of ['open','closed']) $(pose+'-cal').onclick=()=>{
   const rows=angleHistory.filter(x=>performance.now()-x.t<1200);
   if(rows.length<10||rows.at(-1).t-rows[0].t<400){notice('Keep the full hand visible and hold the pose steady for one second.',true);return;}
@@ -259,7 +269,11 @@ $('record').onclick=async()=>{
     const result=await api('/api/sessions',{method:'POST',body:JSON.stringify(config)});
     sessionId=result.id;recording=true;recordedAt=performance.now();batchId=0;savedCounts=null;
     pending={emg:[],vision:[],events:[]};
-    event('recording_started',{calibration,source_started_ms:sourceStarted,tracking_thresholds:{detection:.6,presence:.6,tracking_iou:.6},label_definition:'mean joint bend normalized between open and closed poses'});
+    event('recording_started',{calibration,source_started_ms:sourceStarted,preprocessing_version:2,
+      tracking_thresholds:{detection:.6,presence:.6,tracking_iou:.6,arm_visibility:.65},
+      vision_models:['hand_landmarker/float16/1','pose_landmarker_lite/float16/1'],
+      arm_definition:'elbow flexion: 0 straight; upper arm to torso: shoulder-to-elbow vs shoulder-to-hip; independent validity',
+      label_definition:'mean joint bend normalized between open and closed poses'});
     $('record-title').textContent='Recording in progress.';
     if(!latestVision?.valid)notice('Recording raw EMG without valid visual labels. Finish this recording, then calibrate the camera before your next supervised session.');
     else notice('Recording raw EMG and visual labels locally. Finish recording before closing the tab.');
@@ -298,40 +312,84 @@ $('placement-file').onchange=async()=>{
 };
 
 FINGERS.forEach(name=>{const row=document.createElement('div');row.className='finger-row';row.innerHTML=`<span>${name}</span><div class="finger-track"><div class="measured"></div><div class="predicted"></div></div><output>—</output>`;$('finger-bars').append(row);});
-function drawSignal(){
+for(const id of ['scale-mode','scale-range'])$(id).onchange=()=>{
+  lastScaleAt=-Infinity;
+  $('scale-range').disabled=$('scale-mode').value!=='fixed';
+};
+function drawSignal(now){
+  if(now-lastPlotAt<50)return;
+  lastPlotAt=now;
   const canvas=$('signal'),dpr=devicePixelRatio||1,w=canvas.clientWidth,h=canvas.clientHeight;
   if(canvas.width!==Math.round(w*dpr)||canvas.height!==Math.round(h*dpr)){canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);}
   const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);ctx.font='10px Segoe UI';
-  const chHeight=h/8,left=40;
+  const chHeight=(h-35)/8,left=76,right=w-10,top=8;
+  const mode=$('scale-mode').value;
+  if(now-lastScaleAt>=1000){scales=channelScales(plot,mode,Number($('scale-range').value));lastScaleAt=now;}
+  $('plot-scale-note').textContent=`3 seconds · ${mode==='channel'?'each channel auto-scales':mode==='fixed'?'fixed scale across channels':'shared auto scale'} · ticks in µV`;
+  $('signal-quality').textContent=!running?'Source stopped':performance.now()-lastSampleTime>500?'Waiting for fresh samples':plot.at(-1)?.reason??'Waiting for samples';
+  for(let tick=0;tick<=3;tick++) {
+    const x=left+tick/3*(right-left);ctx.strokeStyle='#edf1ee';ctx.beginPath();ctx.moveTo(x,top);ctx.lineTo(x,h-28);ctx.stroke();
+    ctx.fillStyle='#72857b';ctx.textAlign=tick===3?'right':'left';ctx.fillText(`${tick-3} s`,x,h-8);
+  }
+  ctx.textAlign='left';ctx.fillStyle='#72857b';ctx.fillText('µV',40,10);
   for(let ch=0;ch<8;ch++){
-    const center=(ch+.5)*chHeight;ctx.strokeStyle='#eaf0eb';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(left,center);ctx.lineTo(w,center);ctx.stroke();ctx.fillStyle='#72857b';ctx.fillText(`CH${ch+1}`,0,center+3);
-    if(!plot.length)continue;
-    const scale=Math.max(15,...plot.filter((_,i)=>i%4===0).map(p=>Math.abs(p.values[ch])));
-    ctx.strokeStyle=ch%2?'#377c86':'#4b947d';ctx.lineWidth=1;ctx.beginPath();
-    const stride=Math.max(1,Math.floor(plot.length/(w-left)));
-    for(let i=0;i<plot.length;i+=stride){const p=plot[i],x=left+(p.t-(lastSampleTime-3000))/3000*(w-left),y=center-p.values[ch]/scale*chHeight*.38;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}ctx.stroke();
+    const center=top+(ch+.5)*chHeight,amplitude=chHeight*.34,scale=scales[ch];
+    ctx.fillStyle='#466356';ctx.fillText(`CH${ch+1}`,0,center+3);
+    for(const [value,y] of [[scale,center-amplitude],[0,center],[-scale,center+amplitude]]){
+      ctx.textAlign='right';ctx.fillStyle='#72857b';ctx.fillText(value>0?`+${value}`:String(value),left-7,y+3);
+      ctx.strokeStyle=value===0?'#d7e1da':'#f0f3f0';ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(right,y);ctx.stroke();
+    }
+    ctx.textAlign='left';
+    ctx.save();ctx.beginPath();ctx.rect(left,center-amplitude,right-left,amplitude*2);ctx.clip();
+    const bins=waveformBins(plot,ch,lastSampleTime-3000,3000,Math.max(1,Math.floor(right-left)));
+    let previous;
+    const y=v=>center-v/scale*amplitude;
+    for(const bin of bins){
+      const x=left+bin.x;ctx.strokeStyle=bin.valid?(ch%2?'#377c86':'#4b947d'):'#bd8b42';ctx.lineWidth=1;
+      ctx.beginPath();
+      if(bin.join&&previous){ctx.moveTo(left+previous.x,y(previous.last));ctx.lineTo(x,y(bin.first));}
+      ctx.moveTo(x,y(bin.min));ctx.lineTo(x,y(bin.max));ctx.stroke();previous=bin;
+    }
+    ctx.restore();
+    if(bins.some(bin=>Math.max(Math.abs(bin.min),Math.abs(bin.max))>scale)){
+      ctx.fillStyle='#b15a32';ctx.textAlign='right';ctx.fillText('↕ off scale',right,center-amplitude-3);ctx.textAlign='left';
+    }
   }
 }
-function drawHand(points){
+function drawHand(points,arm=null){
   const canvas=$('overlay'),video=$('video'),ctx=canvas.getContext('2d');canvas.width=video.videoWidth||640;canvas.height=video.videoHeight||480;
-  ctx.clearRect(0,0,canvas.width,canvas.height);if(!points)return;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(arm?.valid){
+    const ids=arm.side==='Left'?[11,13,15]:[12,14,16];
+    ctx.strokeStyle='#ffcb79';ctx.fillStyle='#ffcb79';ctx.lineWidth=4;ctx.beginPath();
+    ids.forEach((id,i)=>{const p=arm.landmarks[id];ctx[i?'lineTo':'moveTo'](p[0]*canvas.width,p[1]*canvas.height);});ctx.stroke();
+    ids.forEach((id,i)=>{const p=arm.landmarks[id],x=p[0]*canvas.width,y=p[1]*canvas.height;ctx.beginPath();ctx.arc(x,y,6,0,2*Math.PI);ctx.fill();ctx.font='14px Segoe UI';ctx.fillText(['Shoulder','Elbow','Wrist'][i],x+9,y-9);});
+  }
+  if(!points)return;
   const chains=[[0,1,2,3,4],[0,5,6,7,8],[5,9,10,11,12],[9,13,14,15,16],[13,17,18,19,20],[0,17]];
   ctx.strokeStyle='#73dbb5';ctx.lineWidth=3;
   for(const chain of chains){ctx.beginPath();chain.forEach((id,j)=>{const p=points[id];ctx[j?'lineTo':'moveTo'](p[0]*canvas.width,p[1]*canvas.height);});ctx.stroke();}
   ctx.fillStyle='#eafef5';points.forEach(p=>{ctx.beginPath();ctx.arc(p[0]*canvas.width,p[1]*canvas.height,3,0,Math.PI*2);ctx.fill();});
 }
 async function updatePrediction(now){
-  if(!$('predict').checked||predictionBusy||!running||now-lastPredictAt<100||filteredWindow.length!==profile.sample_rate_hz*.2)return;
+  if(!$('predict').checked||predictionBusy||!running||now-lastSampleTime>250||now-lastPredictAt<100||filteredWindow.length!==profile.sample_rate_hz*.2)return;
   lastPredictAt=now;predictionBusy=true;
-  try{prediction=await api('/api/predict',{method:'POST',body:JSON.stringify({sample_rate_hz:profile.sample_rate_hz,mains_hz:profile.mains_hz,wiring:$('wiring').value,filtered_uv:filteredWindow})});
+  const segment=processor.segment, predictionProcessor=processor;
+  try{const result=await api('/api/predict',{method:'POST',body:JSON.stringify({sample_rate_hz:profile.sample_rate_hz,mains_hz:profile.mains_hz,wiring:$('wiring').value,filtered_uv:filteredWindow})});
+    if(!running||processor!==predictionProcessor||processor.segment!==segment||performance.now()-lastSampleTime>250)return;
+    prediction=result;
     $('model-status').textContent=`${prediction.training_source==='synthetic'?'Synthetic-trained demo · not validated on people':'Local CNN'} · predicts visual flexion ${prediction.label_delay_ms>=0?'+':''}${prediction.label_delay_ms} ms from window end`;
   }catch(e){$('predict').checked=false;$('model-status').textContent=e.message;prediction=null;}
   finally{predictionBusy=false;}
 }
 function draw(now){
-  drawSignal();
+  drawSignal(now);
+  if(latestVision&&now-latestVision.t_ms>=500&&cameraStream){
+    drawHand(null);$('elbow-angle').textContent=$('shoulder-angle').textContent='—';
+    $('arm-status').textContent='Waiting for a fresh arm measurement…';
+  }
   const fresh=latestVision&&now-latestVision.t_ms<250&&latestVision.valid;
-  [...$('finger-bars').children].forEach((row,i)=>{const value=fresh?latestVision.flexion[i]:null;row.querySelector('.measured').style.width=`${(value??0)*100}%`;row.querySelector('.predicted').style.width=`${$('predict').checked&&prediction?prediction.flexion[i]*100:0}%`;row.querySelector('output').textContent=value===null?'—':`${Math.round(value*100)}%`;});
+  [...$('finger-bars').children].forEach((row,i)=>{const value=fresh?latestVision.flexion[i]:null;row.querySelector('.measured').style.width=`${(value??0)*100}%`;row.querySelector('.predicted').style.width=`${$('predict').checked&&prediction&&running&&now-lastSampleTime<250?prediction.flexion[i]*100:0}%`;row.querySelector('output').textContent=value===null?'—':`${Math.round(value*100)}%`;});
   if(now-lastStatsAt>=1000){$('pps').textContent=running?Math.round((sampleCount-lastStatsSamples)*1000/(now-lastStatsAt)):'—';lastStatsAt=now;lastStatsSamples=sampleCount;$('gaps').textContent=packetGaps;$('coverage').textContent=frameCount?`${Math.round(validFrames/frameCount*100)}%`:'—';}
   if(recording){const elapsed=Math.floor((now-recordedAt)/1000);$('elapsed').textContent=`${Math.floor(elapsed/60).toString().padStart(2,'0')}:${(elapsed%60).toString().padStart(2,'0')}`;}
   if(prompting){const index=Math.floor((now-promptStarted)/6000)%cues.length;if(index!==lastCue){lastCue=index;$('cue').textContent=cues[index];event('cue',{text:cues[index],not_ground_truth:true});}$('cue-progress').firstElementChild.style.width=`${((now-promptStarted)%6000)/60}%`;}
@@ -341,11 +399,12 @@ try{
   const health=await api('/api/health');$('server').textContent='Recorder online · files stay on this computer';
   $('storage-path').textContent=health.data_directory;
   storageReady=health.storage_api_version===1;
+  visionReady=health.vision_schema_version===2&&health.pose_model_ready&&health.camera_model_ready&&health.mediapipe_ready;
   if(!storageReady){
     $('backup-all').removeAttribute('href');$('backup-all').setAttribute('aria-disabled','true');
     $('import-status').textContent='Restart the local recorder to enable verified archives and placement imports. Older single-session ZIP downloads do not include checksum manifests.';
   }
-  if(!health.camera_model_ready||!health.mediapipe_ready)notice('Camera assets are missing. Run npm install and .venv\\Scripts\\python scripts/download_models.py.',true);
+  if(!visionReady)notice('Hand + arm tracking needs the updated recorder and both models. Run .venv\\Scripts\\python scripts/download_models.py, then restart scripts/start-lab.ps1.',true);
   const model=await api('/api/model');$('model-status').textContent=model.available?'Local model found. Enable comparison after connecting a source.':'No trained model yet. Record sessions, build a dataset, then run emg-train.';
   $('predict').disabled=!model.available;
   await configure();await refreshSessions();requestAnimationFrame(draw);

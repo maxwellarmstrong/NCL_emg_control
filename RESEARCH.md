@@ -10,7 +10,7 @@ end-to-end latency have not yet been measured.
 | Component | Implementation | Remaining validation |
 |---|---|---|
 | Acquisition app | Chrome/Edge Web Serial, eight EMG traces, raw recording, camera calibration, landmarks, guided movement cues, session library and ZIP export | Real Cyton stream and electrode quality |
-| Camera labels | Local MediaPipe worker; 21 landmarks; five calibrated flexion targets; one frame in flight | Real hand tracking, occlusion, handedness and repeatability |
+| Camera labels | Local hand + pose worker; 21 hand and 33 pose landmarks; five finger targets; independent arm validity/angles; one frame in flight | Real tracking, occlusion, handedness, repeatability and frame rate |
 | Preprocessing | Shared causal SOS coefficients in JavaScript and SciPy; gaps, clipping, timing and startup exclusion | Participant-specific filter comparisons |
 | Dataset builder | 200 ms trailing windows, 50 ms scheduled hops, bounded interpolation, complete-session splits | Empirical EMG/camera delay and clock drift |
 | CNN | Temporal convolutional features, five continuous outputs, five activation outputs, auxiliary six-class head | Training on real recordings |
@@ -48,7 +48,7 @@ npm ci
 
 `pyproject.toml` defines the supported dependency ranges; `requirements-lock.txt`
 captures the tested versions. `package-lock.json` pins MediaPipe JS 1.2.0. The
-download script retrieves the version-1 hand-landmarker model from Google's official
+download script retrieves version-1 hand-landmarker and pose-landmarker-lite models from Google's official
 storage and records its SHA-256 locally; that hash is a provenance record, not an
 independently verified vendor checksum. No OpenAI API key or GPU is required.
 
@@ -83,7 +83,7 @@ models and cannot be mixed in one dataset.
 2. For real data, choose **OpenBCI Cyton · USB**, the correct electrode wiring,
    and mains frequency (60 Hz is the default for this location). Connect and
    select the dongle in the browser's port chooser. Check the sample rate and gaps.
-3. Enable the camera, select the correct hand, and hold the full hand in view.
+3. Enable the camera, select the correct side, and keep shoulder, elbow, wrist and full hand in view.
    Capture an open pose and a closed pose, each held steady for a second. The
    calibration requires enough angular range for every finger. Keep fingertips
    visible; the camera estimate can still fail during a tightly occluded fist.
@@ -119,7 +119,7 @@ Each recording is stored in `data/sessions/<uuid>/`:
 |---|---|
 | `metadata.json` | Source, participant, split, sample rate, wiring, hand, filter coefficients, counts, time origin and status |
 | `emg.jsonl` | Raw microvolts, ADC counts where available, sequence/index, reconstructed sample time, host receipt time, clipping/timing flags and auxiliary bytes |
-| `vision.jsonl` | Frame callback/processing times, raw normalized/world landmarks, joint bends, calibrated flexion, handedness score, validity and rejection reason |
+| `vision.jsonl` | Frame callback/processing times, hand landmarks, calibrated finger labels and quality; nested `arm` with pose landmarks/world coordinates, visibility, side, angles and independent validity |
 | `events.jsonl` | Calibration values, recording events, movement cues and page-visibility changes |
 
 EMG and camera share the browser's monotonic clock. EMG time is reconstructed
@@ -144,6 +144,37 @@ coordinates are used for angles. Its handedness score is **not** a per-landmark
 confidence score; edge, geometry, jump and missing-hand rules are heuristics,
 and monocular occlusion can remain undetected.
 
+## Arm tracking
+
+Hand Landmarker and Pose Landmarker Lite run sequentially in the same local
+worker on one ImageBitmap and timestamp. Only one frame is in flight; camera
+frames arriving while inference is busy are skipped rather than queued. No
+person segmentation mask or video is saved. Keep one person in the frame.
+
+The selected side uses pose indices 11/13/15/23 (left shoulder/elbow/wrist/hip)
+or 12/14/16/24 (right). Shoulder, elbow and wrist must have visibility >= 0.65,
+be inside the 2% frame margin, and produce nondegenerate world-coordinate geometry.
+Multiple detected people invalidate the arm estimate. These are quality heuristics,
+not measured accuracy guarantees. The detector is configured for up to two people
+to catch ambiguity, and can still miss a bystander.
+
+`arm.elbow_flexion_deg` is 180° minus the shoulder–elbow–wrist internal angle:
+0° means straight. `arm.upper_arm_to_torso_deg` is the angle between
+shoulder→elbow and shoulder→hip; it is null when the hip is not visible.
+Neither angle estimates axial forearm rotation. Hand and pose world coordinates
+have different origins and are never concatenated into one 3D skeleton. An
+image-space wrist consistency check rejects mismatched hand/arm associations.
+[MediaPipe Pose Landmarker documentation](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker/web_js)
+
+Each `vision.jsonl` frame stores `arm.side`, `valid`, `reason`, 33 XYZ `landmarks`,
+33 XYZ `world_landmarks`, 33 `visibility` values, and the two angles. Missing pose
+fields are null. Finger validity and calibration are independent: an arm-only
+frame remains useful in the raw recording but has no valid finger target.
+Existing recordings without `arm` remain readable. `emg-dataset --require-arm`
+requires valid arm tracking over the full label interval, including interpolation
+endpoints and interior frames; the existing five-target CNN architecture is unchanged.
+Use this flag for a matched hand/arm subset, not to claim an arm decoder was trained.
+
 ## Biosignal filtering
 
 | Native sample rate | Initial band-pass | Optional mains notch | CNN input |
@@ -156,8 +187,11 @@ eighth order), implemented as second-order sections for numerical stability.
 The same coefficients and causal filter state are used live and in training.
 Offline `filtfilt` is deliberately not used because its future-sample access and
 phase response would differ from deployment. State persists across chunks and
-resets at packet gaps. One second after startup/gaps and after clipped or timing-
-uncertain samples is excluded. No common-average subtraction is applied by default,
+resets at packet/time gaps, clipped samples and timing uncertainty. Bad samples
+are not fed into the filter; a fresh filter starts on clean recovery and its first
+second is excluded. A time gap exceeds 1.5 nominal sample periods. The browser and
+Python use identical reset and validity rules (preprocessing version 2). Rebuild
+datasets/retrain to adopt this version. No common-average subtraction is applied by default,
 particularly for bipolar channels. The CNN sees the band-passed waveform, not the
 original simulator's rectified low-pass control envelope.
 
@@ -175,6 +209,17 @@ Run `python scripts/filter_report.py` through `.venv` to write frequency-respons
 and frequency-dependent group-delay diagnostics to `artifacts/filter-validation.json`.
 Tests verify attenuation, stability, persistent state, reset behavior, and numeric
 agreement between the browser implementation and SciPy at both sample rates.
+
+The eight plot rows show signed filtered microvolts around zero with explicit
+positive/zero/negative ticks. Shared auto scale preserves amplitude comparisons;
+fixed scale remains constant; per-channel auto is available for inspecting weak
+signals. Auto ranges update once per second using all visible peaks and rounded
+1/2/5 ranges. Downsampling uses per-pixel minima/maxima, not stride sampling.
+Plots break at acquisition segments and bad samples, mark warmup in amber, and
+clip oversized traces within a row with an off-scale label. Scaling changes only
+display coordinates. Raw recording and CNN input retain their physical units.
+The dataset scheduler skips stale endpoints during a long gap instead of duplicating
+the last valid window. No window crosses a reset, invalid frame or >100 ms label gap.
 To optimize empirically, compare low edges 10/20/30 Hz, justified upper edges,
 notch on/off, and filter orders on training/validation sessions. Evaluate decoding
 error, rest noise, movement artifacts, mains contamination and end-to-end delay.

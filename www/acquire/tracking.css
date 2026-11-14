@@ -1,0 +1,14 @@
+.plot-controls { display: flex; gap: 14px; margin: 16px 0 12px; align-items: end; flex-wrap: wrap; }
+.plot-controls label:first-child { flex: 1; }
+.plot-controls select { width: 100%; }
+.signal-key { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 10px; color: var(--muted); margin-bottom: 8px; }
+.signal-key i { display: inline-block; width: 13px; height: 2px; background: #4b947d; margin-right: 5px; vertical-align: middle; }
+.signal-key .settling i { background: #bd8b42; }
+.signal-key strong { margin-left: auto; font-weight: 500; }
+#signal { height: 560px; }
+.camera-view { height: auto; aspect-ratio: 4 / 3; }
+.arm-readouts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; padding: 13px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.arm-readouts span, .arm-readouts small { display: block; color: var(--muted); font-size: 10px; }
+.arm-readouts output { display: block; font-size: 25px; font-variant-numeric: tabular-nums; margin: 5px 0; }
+#arm-status { color: #8b6635; min-height: 2.8em; }
+@media(max-width: 750px) { .signal-key strong { margin-left: 0; } }

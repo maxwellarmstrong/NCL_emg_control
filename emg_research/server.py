@@ -6,12 +6,13 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .signal import FilterConfig
 from .storage import data_directory, create_archive, completed_sessions
@@ -87,6 +88,38 @@ class Sample(BaseModel):
     timing_uncertain: bool = False
 
 
+class ArmFrame(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    side: Literal['Left', 'Right']
+    valid: bool
+    reason: str = Field(max_length=200)
+    landmarks: list[list[float]] | None = Field(default=None, min_length=33, max_length=33)
+    world_landmarks: list[list[float]] | None = Field(default=None, min_length=33, max_length=33)
+    visibility: list[float] | None = Field(default=None, min_length=33, max_length=33)
+    elbow_flexion_deg: float | None = Field(default=None, ge=0, le=180)
+    upper_arm_to_torso_deg: float | None = Field(default=None, ge=0, le=180)
+
+    @field_validator('landmarks', 'world_landmarks')
+    @classmethod
+    def triples(cls, v):
+        if v is not None and any(len(p) != 3 for p in v):
+            raise ValueError('Pose landmarks must be XYZ triples')
+        return v
+
+    @field_validator('visibility')
+    @classmethod
+    def probabilities(cls, v):
+        if v is not None and any(not 0 <= score <= 1 for score in v):
+            raise ValueError('Pose visibility must be in [0,1]')
+        return v
+
+    @model_validator(mode='after')
+    def measured_if_valid(self):
+        if self.valid and any(v is None for v in (self.landmarks, self.world_landmarks, self.visibility, self.elbow_flexion_deg)):
+            raise ValueError('Valid arm tracking requires landmarks, visibility and an elbow angle')
+        return self
+
+
 class Vision(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     t_ms: float = Field(ge=0)
@@ -99,6 +132,7 @@ class Vision(BaseModel):
     world_landmarks: list[list[float]] | None = None
     handedness_score: float | None = Field(default=None, ge=0, le=1)
     media_time_s: float | None = None
+    arm: ArmFrame | None = None  # Independent of finger validity/calibration.
 
     @field_validator("flexion")
     @classmethod
@@ -133,7 +167,9 @@ def save_metadata(path, meta):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "storage_api_version": 1, "data_directory": str(DATA), "camera_model_ready": (ROOT / "models/hand_landmarker.task").exists(),
+    return {"ok": True, "storage_api_version": 1, "vision_schema_version": 2, "data_directory": str(DATA),
+            "pose_model_ready": (ROOT / "models/pose_landmarker_lite.task").exists(),
+            "camera_model_ready": (ROOT / "models/hand_landmarker.task").exists(),
             "mediapipe_ready": (ROOT / "node_modules/@mediapipe/tasks-vision/vision_bundle.mjs").exists()}
 
 

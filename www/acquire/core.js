@@ -59,11 +59,86 @@ export class SOSFilter {
   }
 }
 
+// The same reset/mask rules are implemented by Python's filter_segments.
+export class SignalProcessor {
+  constructor(profile) {
+    this.profile=profile; this.filter=new SOSFilter(profile.sos);
+    this.previous=null; this.previousBad=false; this.settleUntil=Infinity; this.segment=-1;
+  }
+  process(sample) {
+    const previous=this.previous;
+    const gap=previous!==null&&(sample.index!==previous.index+1 || sample.t_ms<=previous.t_ms ||
+      sample.t_ms-previous.t_ms>1500/this.profile.sample_rate_hz);
+    const bad=!!(sample.clipped||sample.timing_uncertain);
+    const reset=!previous||gap||bad||this.previousBad;
+    if(reset) {
+      this.filter.reset(); this.segment++;
+      this.settleUntil=sample.t_ms+1000*this.profile.warmup_seconds;
+    }
+    const values=bad?Array(8).fill(0):this.filter.process(sample.uv);
+    const valid=!bad&&sample.t_ms>=this.settleUntil;
+    this.previous=sample;this.previousBad=bad;
+    return {t:sample.t_ms, values, valid, bad, gap, segment:this.segment,
+      reason:sample.clipped?'ADC clipping':sample.timing_uncertain?'Timing uncertain':valid?'Ready':'Filter settling'};
+  }
+}
+
+export function niceAmplitude(peak) {
+  const target=Math.max(25,peak*1.1), decade=10**Math.floor(Math.log10(target));
+  return [1,2,5,10].find(step=>step*decade>=target)*decade;
+}
+
+export function channelScales(rows, mode='shared', fixed=100) {
+  if(mode==='fixed') return Array(8).fill(fixed);
+  const peaks=Array(8).fill(0);
+  for(const row of rows) if(!row.bad) row.values.forEach((v,ch)=>peaks[ch]=Math.max(peaks[ch],Math.abs(v)));
+  return mode==='channel'?peaks.map(niceAmplitude):Array(8).fill(niceAmplitude(Math.max(...peaks)));
+}
+
+// Min/max per pixel keeps brief EMG peaks that stride-based decimation discards.
+// Segment and validity changes always start a new path, even within one pixel.
+export function waveformBins(rows, channel, startMs, durationMs, width) {
+  const bins=[];let current;
+  for(const row of rows) {
+    if(row.t<startMs||row.t>startMs+durationMs||row.bad) {current=null;continue;}
+    const x=Math.min(width-1,Math.floor((row.t-startMs)/durationMs*width));
+    const v=row.values[channel];
+    if(!current||current.x!==x||current.segment!==row.segment||current.valid!==row.valid) {
+      const join=!!current&&current.segment===row.segment&&current.valid===row.valid;
+      current={x,min:v,max:v,first:v,last:v,segment:row.segment,valid:row.valid,join};bins.push(current);
+    }else{current.min=Math.min(current.min,v);current.max=Math.max(current.max,v);current.last=v;}
+  }
+  return bins;
+}
+
 function bend(a,b,c) {
   const u = a.map((v,i) => v-b[i]), v = c.map((n,i) => n-b[i]);
   const norm = Math.hypot(...u)*Math.hypot(...v);
   if (norm < 1e-10) return NaN;
   return 180 - Math.acos(Math.max(-1, Math.min(1,u.reduce((s,n,i)=>s+n*v[i],0)/norm)))*180/Math.PI;
+}
+
+export function armMeasurement(poses, worlds, side) {
+  const result={side,valid:false,reason:'no person detected',landmarks:null,world_landmarks:null,
+    visibility:null,elbow_flexion_deg:null,upper_arm_to_torso_deg:null};
+  if(poses?.length!==1) {if(poses?.length>1)result.reason='multiple people in frame';return result;}
+  const points=poses[0], world=worlds?.[0];
+  if(points.length!==33||world?.length!==33) {result.reason='incomplete pose';return result;}
+  const xyz=p=>[p.x,p.y,p.z];
+  if(!points.every(p=>xyz(p).every(Number.isFinite)&&Number.isFinite(p.visibility)) ||
+     !world.every(p=>xyz(p).every(Number.isFinite))) {result.reason='invalid pose geometry';return result;}
+  result.landmarks=points.map(xyz);result.world_landmarks=world.map(xyz);result.visibility=points.map(p=>p.visibility);
+  const [s,e,w,h]=side==='Left'?[11,13,15,23]:[12,14,16,24];
+  const visible=id=>points[id].visibility>=.65&&points[id].x>=.02&&points[id].x<=.98&&points[id].y>=.02&&points[id].y<=.98;
+  if(![s,e,w].every(visible)) {result.reason='show shoulder, elbow and wrist clearly';return result;}
+  const elbow=bend(...[s,e,w].map(id=>xyz(world[id])));
+  if(!Number.isFinite(elbow)) {result.reason='degenerate arm geometry';return result;}
+  result.valid=true;result.reason='ok';result.elbow_flexion_deg=elbow;
+  if(visible(h)) {
+    const angle=180-bend(...[e,s,h].map(id=>xyz(world[id])));
+    if(Number.isFinite(angle))result.upper_arm_to_torso_deg=angle;
+  }
+  return result;
 }
 
 export function fingerAngles(world) {

@@ -69,13 +69,20 @@ class StreamingFilter:
         return y
 
 
-def filter_segments(values, indices, config):
-    """Reset at acquisition gaps; exclude the settling interval after every reset."""
+def filter_segments(values, indices, config, times=None, bad=None):
+    """Reset at counter/time gaps and artifacts; mask one warmup after recovery."""
     values, indices = np.asarray(values), np.asarray(indices)
+    times = np.asarray(times if times is not None else indices * 1000 / config.sample_rate_hz)
+    bad = np.asarray(bad if bad is not None else np.zeros(len(indices)), dtype=bool)
+    if len(times) != len(indices) or len(bad) != len(indices) or len(values) != len(indices):
+        raise ValueError("Samples, indices, times and quality masks must have equal lengths")
     out = np.zeros_like(values, dtype=np.float64)
-    valid = np.ones(len(values), dtype=bool)
-    boundaries = np.r_[0, np.flatnonzero(np.diff(indices) != 1) + 1, len(indices)]
+    valid = np.zeros(len(values), dtype=bool)
+    gaps = (np.diff(indices) != 1) | (np.diff(times) <= 0) | (np.diff(times) > 1500 / config.sample_rate_hz)
+    boundaries = np.unique(np.r_[0, np.flatnonzero(gaps | bad[1:] | bad[:-1]) + 1, len(indices)])
     for start, end in zip(boundaries[:-1], boundaries[1:]):
+        if bad[start]:
+            continue
         out[start:end] = StreamingFilter(config).process(values[start:end])
-        valid[start:min(end, start + round(config.warmup_seconds * config.sample_rate_hz))] = False
+        valid[start:end] = times[start:end] >= times[start] + 1000 * config.warmup_seconds
     return out, valid

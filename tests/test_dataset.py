@@ -72,3 +72,34 @@ def test_window_rejects_interior_occlusion_and_post_clipping(tmp_path):
         assert len(ends)>0
         assert not ((ends>=occlusion_t)&(ends<occlusion_t+196)).any()
         assert not ((ends>=clip_t)&(ends<clip_t+1196)).any()
+
+
+def test_long_signal_gap_does_not_duplicate_stale_windows(tmp_path):
+    generate(tmp_path/'sessions',seconds=6)
+    folder=sorted((tmp_path/'sessions').iterdir())[0]
+    sid=json.loads((folder/'metadata.json').read_text())['id']
+    samples=[json.loads(line) for line in (folder/'emg.jsonl').read_text().splitlines()]
+    samples=[s for s in samples if not 2200<=s['t_ms']<4000]
+    (folder/'emg.jsonl').write_text('\n'.join(map(json.dumps,samples)))
+    build_dataset(tmp_path/'sessions',tmp_path/'d.npz',allow_synthetic=True)
+    with np.load(tmp_path/'d.npz') as data:
+        ends=data['end_ms'][data['session']==sid]
+        assert len(ends)==len(set(ends))
+        assert not ((ends>=2200)&(ends<5196)).any()
+
+
+def test_arm_required_windows_reject_interior_occlusion_and_legacy_frames(tmp_path):
+    generate(tmp_path/'sessions',seconds=4)
+    folder=sorted((tmp_path/'sessions').iterdir())[0]
+    sid=json.loads((folder/'metadata.json').read_text())['id']
+    frames=[json.loads(line) for line in (folder/'vision.jsonl').read_text().splitlines()]
+    for f in frames:
+        f['arm']={'valid':True}
+    invalid=min(frames,key=lambda f:abs(f['t_ms']-1600));invalid['arm']['valid']=False
+    (folder/'vision.jsonl').write_text('\n'.join(map(json.dumps,frames)))
+    metadata=build_dataset(tmp_path/'sessions',tmp_path/'d.npz',allow_synthetic=True,require_arm=True)
+    assert metadata['require_arm'] is True
+    with np.load(tmp_path/'d.npz') as data:
+        assert set(data['session'])=={sid}  # Other sessions have no arm field.
+        ends=data['end_ms']
+        assert not ((ends>=invalid['t_ms'])&(ends<invalid['t_ms']+196)).any()

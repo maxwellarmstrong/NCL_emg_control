@@ -17,15 +17,20 @@ def read_jsonl(path):
         return [json.loads(line) for line in stream if line.strip()]
 
 
-def aligned_label(frames, times, t_ms, max_gap_ms=100):
+def label_valid(frame, require_arm=False):
+    return (frame['valid'] and frame.get('flexion') is not None and
+            (not require_arm or bool((frame.get('arm') or {}).get('valid'))))
+
+
+def aligned_label(frames, times, t_ms, max_gap_ms=100, require_arm=False):
     right = int(np.searchsorted(times, t_ms, side="left"))
     if right < len(times) and abs(times[right] - t_ms) < 1e-6:
         frame = frames[right]
-        return np.asarray(frame["flexion"], dtype=np.float32) if frame["valid"] and frame["flexion"] is not None else None
+        return np.asarray(frame["flexion"], dtype=np.float32) if label_valid(frame, require_arm) else None
     if right == 0 or right == len(times):
         return None
     a, b = frames[right - 1], frames[right]
-    if not (a["valid"] and b["valid"]) or a["flexion"] is None or b["flexion"] is None:
+    if not (label_valid(a, require_arm) and label_valid(b, require_arm)):
         return None
     dt = times[right] - times[right - 1]
     if not 0 < dt <= max_gap_ms:
@@ -34,7 +39,7 @@ def aligned_label(frames, times, t_ms, max_gap_ms=100):
     return np.asarray(a["flexion"]) * (1 - w) + np.asarray(b["flexion"]) * w
 
 
-def build_dataset(session_root, output, label_delay_ms=None, allow_synthetic=False):
+def build_dataset(session_root, output, label_delay_ms=None, allow_synthetic=False, require_arm=False):
     result = {k: [] for k in ("x", "y", "class_id", "session", "split", "end_ms")}
     reports, configs, sources, delays, wirings = [], [], set(), set(), set()
     for folder in sorted(Path(session_root).iterdir()):
@@ -78,29 +83,26 @@ def build_dataset(session_root, output, label_delay_ms=None, allow_synthetic=Fal
         raw = np.asarray([s["uv"] for s in samples], dtype=np.float64)
         if raw.shape[1:] != (8,) or not np.isfinite(raw).all():
             raise ValueError("Invalid EMG values")
-        filtered, clean = filter_segments(raw, indices, config)
-        # Match the live predictor's one-second rejection after saturation, including
-        # post-clipping filter ringing, while preserving the raw samples on disk.
-        for clipped in np.flatnonzero([s.get("clipped", False) or s.get("timing_uncertain", False) for s in samples]):
-            clean[clipped:np.searchsorted(times, times[clipped] + 1000 * config.warmup_seconds)] = False
+        bad = [s.get("clipped", False) or s.get("timing_uncertain", False) for s in samples]
+        filtered, clean = filter_segments(raw, indices, config, times, bad)
         count = round(config.sample_rate_hz * .2)
         # Time-scheduled hops alternate 12/13 samples at 250 Hz; no silent 48 ms hop.
         for target in np.arange(times[0] + 200, times[-1] + 1e-6, 50):
             end = int(np.searchsorted(times, target, side="right"))
             start = end - count
-            if start < 0:
+            if start < 0 or target - times[end - 1] >= 1500 / config.sample_rate_hz:
                 continue
             label_t = times[end - 1] + delay
-            y = aligned_label(frames, ft, label_t)
-            contiguous = np.all(np.diff(indices[start:end]) == 1) and np.all(np.diff(times[start:end]) < 1500 / config.sample_rate_hz)
+            y = aligned_label(frames, ft, label_t, require_arm=require_arm)
+            contiguous = np.all(np.diff(indices[start:end]) == 1) and np.all(np.diff(times[start:end]) <= 1500 / config.sample_rate_hz)
             if y is None or not contiguous or not clean[start:end].all() or not np.isfinite(y).all():
                 report["rejected"] += 1
                 continue
-            y0 = aligned_label(frames, ft, times[start] + delay)
+            y0 = aligned_label(frames, ft, times[start] + delay, require_arm=require_arm)
             left, right = np.searchsorted(ft, [times[start] + delay, label_t])
             interior = frames[left:right]
             label_times = np.r_[times[start] + delay, ft[left:right], label_t]
-            if y0 is None or any(not f['valid'] or f['flexion'] is None for f in interior) or np.any(np.diff(label_times) > 100):
+            if y0 is None or any(not label_valid(f, require_arm) for f in interior) or np.any(np.diff(label_times) > 100):
                 report["rejected"] += 1
                 continue
             label_values = np.asarray([y0, *[f['flexion'] for f in interior], y])
@@ -122,7 +124,8 @@ def build_dataset(session_root, output, label_delay_ms=None, allow_synthetic=Fal
         raise ValueError(f"No valid windows. Session report: {reports}")
     if len(sources) > 1:
         raise ValueError("Keep synthetic and human recordings in separate datasets")
-    metadata = {"schema_version": 1, "sample_rate_hz": configs[0][0][0], "window_ms": 200,
+    metadata = {"schema_version": 1, "preprocessing_version": 2, "require_arm": require_arm,
+                "sample_rate_hz": configs[0][0][0], "window_ms": 200,
                 "hop_ms": 50, "window_samples": result["x"][0].shape[1], "filter": configs[0][1],
                 "label_delay_ms": next(iter(delays)), "training_source": next(iter(sources)), "wiring": next(iter(wirings)),
                 "classification": "0=rest;1=thumb;2=index;3=middle;4=ring;5=little;-100=transition/combination/ambiguous",
@@ -140,8 +143,9 @@ def main():
     p.add_argument("--output", type=Path, default=Path("artifacts/dataset.npz"))
     p.add_argument("--label-delay-ms", type=float)
     p.add_argument("--allow-synthetic", action="store_true")
+    p.add_argument("--require-arm", action="store_true", help="Require valid arm tracking throughout each finger window")
     args = p.parse_args()
-    metadata = build_dataset(args.sessions, args.output, args.label_delay_ms, args.allow_synthetic)
+    metadata = build_dataset(args.sessions, args.output, args.label_delay_ms, args.allow_synthetic, args.require_arm)
     print(json.dumps({"output": str(args.output), **{k:v for k,v in metadata.items() if k != "filter"}}, indent=2))
 
 

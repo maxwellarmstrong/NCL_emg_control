@@ -63,3 +63,19 @@ def test_failed_finalize_remains_retryable(client, monkeypatch):
     assert server.active[sid]['meta']['status']=='recording'
     monkeypatch.setattr(server,'save_metadata',original)
     assert client.post(f'/api/sessions/{sid}/stop').json()['status']=='complete'
+
+
+def test_arm_only_frame_is_saved_without_inventing_finger_labels(client):
+    import json
+    sid=client.post('/api/sessions',json={}).json()['id']
+    arm={'side':'Right','valid':True,'reason':'ok','landmarks':[[.5,.5,0]]*33,
+         'world_landmarks':[[0.,0.,0.]]*33,'visibility':[.99]*33,'elbow_flexion_deg':90}
+    frame={'t_ms':1,'processed_ms':2,'valid':False,'reason':'hand occluded','arm':arm}
+    assert client.post(f'/api/sessions/{sid}/batch',json={'batch_id':0,'vision':[frame]}).status_code==200
+    saved=json.loads((server.DATA/sid/'vision.jsonl').read_text())
+    assert saved['arm']['elbow_flexion_deg']==90 and saved['flexion'] is None
+    assert client.get('/api/health').json()['vision_schema_version']==2
+    frame['t_ms']=2;arm['visibility'][0]=1.1
+    assert client.post(f'/api/sessions/{sid}/batch',json={'batch_id':1,'vision':[frame]}).status_code==422
+    arm['visibility'][0]=.99;arm['elbow_flexion_deg']=None
+    assert client.post(f'/api/sessions/{sid}/batch',json={'batch_id':1,'vision':[frame]}).status_code==422
