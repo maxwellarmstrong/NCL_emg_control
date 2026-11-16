@@ -64,6 +64,32 @@ Tests (parser, filters, pipeline, kinematics): `cargo test`
    moves the joint one way, the − muscle the other; co-contraction cancels.
    Joints use hysteresis: they start at the threshold and stop at half of it.
 
+## Train the live arm from a research ZIP
+
+In the research acquisition app, record a **Training** session at 250 Hz with the
+camera calibrated. Include several seconds relaxed with the hand open, then curl
+one finger at a time and return to rest between curls. Download the completed ZIP.
+In this simulator, open **Control source → Training recording** and select that ZIP.
+Training runs locally in a browser worker. It accepts individual and multi-session
+exports, uses completed training sessions, and checks the imported files against
+the archive's SHA-256 manifest. Use the same participant, hand, electrodes and
+channel order for training and live use.
+
+The simulator displays which finger patterns it learned and selects the recorded
+wiring. Click **Connect** for live Cyton control. A light curl drives the assigned
+joint backward, a firm curl drives it forward, and relaxing stops it. The finger
+grid selectors assign thumb, index, middle and ring/little to arm joints. Only
+the strongest finger controls a joint at any moment. Speed scales its command.
+To switch back, select Manual or EMG. Reloading clears the calibration; import
+the ZIP again to restore it. Synthetic 250 Hz recordings are for Simulate only.
+
+Training aligns 200 ms windows of filtered eight-channel EMG to valid camera
+flexion labels using the recorded label delay. The decoder estimates resting
+noise and an activation pattern for each isolated curl. Live control uses the
+same filter and features, updates every 40 ms, and smooths commands before
+sending them to the original arm. A sample gap, clipping or stale stream clears
+or suppresses motion until fresh data is available.
+
 ## Finger grid mode
 
 **Control scheme → Finger grid** swaps muscle pairs for 8 electrodes in a 2×4 grid

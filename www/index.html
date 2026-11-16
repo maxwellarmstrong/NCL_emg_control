@@ -69,7 +69,10 @@
         <div class="seg" id="source">
           <button data-src="manual" class="active">Manual</button>
           <button data-src="emg">EMG</button>
+          <button id="trained-source" data-src="trained" disabled>ZIP-trained EMG</button>
         </div>
+        <label class="field">Training recording <input id="training-zip" type="file" accept=".zip,application/zip"></label>
+        <p class="hint" id="training-status" role="status">Import a 250 Hz Training ZIP with relaxed open-hand periods and isolated finger curls.</p>
         <p class="hint" id="source-hint">Keys Q/A · W/S · E/D · R/F, or drag the sliders (they spring back to 0).</p>
       </section>
 
