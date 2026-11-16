@@ -1,0 +1,46 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Hand and arm tracker smoke test</title>
+<body><h1>Hand and arm tracker smoke test</h1>
+<p>No camera access. The optional photo is Google's public MediaPipe test fixture, not a participant recording.</p>
+<p>For the photo test, run <code>python scripts/download_models.py --test-fixtures</code> first.</p>
+<button id="blank">Load models and inspect blank frame</button>
+<button id="pose">Check official pose fixture</button>
+<pre id="status">Ready</pre><canvas id="preview" style="max-width:100%"></canvas>
+<script type="module">
+import {armMeasurement} from './core.js?v=4';
+const status=document.getElementById('status'),canvas=document.getElementById('preview');
+for(const kind of ['blank','pose'])document.getElementById(kind).onclick=async()=>{
+  for(const button of document.querySelectorAll('button'))button.disabled=true;
+  status.textContent='Loading…';
+  let worker;
+  const finish=()=>{worker?.terminate();for(const button of document.querySelectorAll('button'))button.disabled=false;};
+  try {
+    canvas.width=320;canvas.height=240;
+    const ctx=canvas.getContext('2d');ctx.fillRect(0,0,320,240);
+    if(kind==='pose') {
+      const photo=new Image();photo.src='/models/pose-test.jpg';await photo.decode();
+      canvas.width=photo.naturalWidth;canvas.height=photo.naturalHeight;ctx.drawImage(photo,0,0);
+    }
+    worker=new Worker('/assets/vision-worker.js?v=4');
+    worker.onerror=e=>{status.textContent='ERROR: '+e.message;finish();};
+    worker.onmessage=async({data})=>{
+      if(data.type==='ready'){
+        const bitmap=await createImageBitmap(canvas);
+        worker.postMessage({type:'frame',bitmap,t_ms:performance.now(),media_time_s:0},[bitmap]);
+      }else if(data.type==='result'){
+        const arms=['Left','Right'].map(side=>armMeasurement(data.pose_landmarks,data.pose_world,side));
+        const pass=kind==='blank'?data.landmarks.length===0&&data.pose_landmarks.length===0:arms.every(arm=>arm.valid);
+        status.textContent=(pass?'PASS':'FAIL')+`: both models ran; ${data.landmarks.length} hands and ${data.pose_landmarks.length} poses.`;
+        if(kind==='pose')for(const arm of arms){
+          status.textContent+=`\n${arm.side} arm: ${arm.reason}, elbow ${arm.elbow_flexion_deg?.toFixed(1)}°, upper arm / torso ${arm.upper_arm_to_torso_deg?.toFixed(1)}°`;
+          if(!arm.valid)continue;
+          ctx.strokeStyle=arm.side==='Left'?'#00ffad':'#ffbf00';ctx.lineWidth=5;ctx.beginPath();
+          const ids=arm.side==='Left'?[11,13,15]:[12,14,16];
+          ids.forEach((id,i)=>{const p=arm.landmarks[id];ctx[i?'lineTo':'moveTo'](p[0]*canvas.width,p[1]*canvas.height);});ctx.stroke();
+        }
+        finish();
+      }else if(data.type==='error'){status.textContent='ERROR: '+data.message;finish();}
+    };
+    worker.postMessage({type:'init'});
+  }catch(error){status.textContent='ERROR: '+error;finish();}
+};
+</script></body></html>

@@ -1,5 +1,220 @@
 # EMG Arm
 
+## Finger-decoding research workspace
+
+The research workspace adds a local acquisition app and a Python learning pipeline
+for continuous finger-motion decoding. The existing Rust/WASM arm simulator is
+still available separately. [RESEARCH.md](RESEARCH.md) contains the full equipment
+list, recording protocol, synchronization assumptions, model architecture, and RL
+experiment plan.
+
+### What was added
+
+| Area | Implementation |
+|---|---|
+| Acquisition web app | Eight-channel EMG traces; Cyton Web Serial connection; 250 Hz and 2 kHz synthetic streams; guided movement cues; recording controls and session library |
+| Camera supervision | Local hand + arm tracking in a worker; shoulder/elbow/wrist overlay and arm angles; open/closed finger calibration; independent hand/arm quality flags |
+| Local recorder | FastAPI backend; raw EMG, timestamps, landmarks, calibration and settings saved to disk; retry-safe batches; ZIP export; train/validation/test assignment per recording |
+| Biosignal preprocessing | Shared causal Butterworth SOS filters in Python and JavaScript; optional narrow mains notch; startup, gap, clipping and suspicious-timing exclusion |
+| CNN and baselines | Temporal CNN with continuous flexion, simultaneous activation and isolated-finger classification heads; training-only normalization; session-separated evaluation; LDA and random-forest baselines |
+| RL starter | Gymnasium residual-control environment; bounded actions and simulated joint limits; PPO/SAC training and comparison with zero residual |
+| Dependencies and checks | Python project and CPU dependency lock, npm lock, local model download and launch scripts, filter diagnostics, Python and JavaScript tests |
+
+### Install and run the acquisition app
+
+The tested environment is **Windows x64, Python 3.12, Node.js/npm and CPU PyTorch**.
+From the repository root:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements-lock.txt
+npm ci
+.\.venv\Scripts\python.exe scripts/download_models.py
+powershell -File scripts/start-lab.ps1
+```
+
+Open <http://localhost:8081> in **Chrome or Edge**. On subsequent runs, only the last
+command is needed. Select **Synthetic demo** to try the complete recording workflow
+without electrodes or camera access. For real data, connect the Cyton, enable the
+camera, and capture open and closed calibration poses before recording.
+
+Keep your **shoulder, elbow, wrist and fingers** in frame and select **Side**.
+The camera now runs Hand Landmarker and Pose Landmarker Lite on the same frame.
+It displays elbow flexion (0° = straight) and the upper-arm angle relative to the
+torso when the hip is visible. Arm tracking works without finger calibration;
+occluded arms are marked unavailable. Both version-1 models are downloaded by
+`scripts/download_models.py`. After updating an existing installation, rerun that
+script, restart the recorder, and reload the browser.
+
+Arm landmarks, visibility scores and angles are saved in the `arm` object of each
+`vision.jsonl` frame, with validity independent of the finger label. These are
+monocular estimates, not calibrated motion capture. The CNN still predicts five
+finger targets; arm-output training and forearm pronation/supination are future
+work. See [camera measurements](RESEARCH.md#arm-tracking).
+
+Open the app through that HTTP address, rather than double-clicking
+`www/acquire/index.html`. A direct HTML file now shows a styled preview and a
+launch link; recording, camera tracking and live controls require the local server.
+
+The server binds to this computer's loopback address. Raw EMG and landmarks are
+saved under `data/sessions/`; camera video is not saved. Recordings, generated
+artifacts, downloaded models and installed dependencies are excluded from Git.
+
+### Data storage, backup and existing placement work
+
+The Session Library shows the exact local directory. **Download ZIP** creates an
+additional browser download; the original stays on disk. **Download completed
+recordings** archives completed sessions with per-file SHA-256 checksums.
+`EMG_DATA_DIR` selects a dedicated data folder shared across code checkouts; the
+server, dataset, import and archive tools all honor it.
+
+The existing `feature/emg-placement-lab-2026-10-31` branch keeps trials in browser
+IndexedDB. Export its recording/comparison-set JSON, then use **Import placement-lab
+JSON** to preserve those trials in the research app's local archive. Raw samples,
+channel mappings, stage/retry boundaries and cues are retained. Placement cues
+are explicitly excluded from camera-supervised finger datasets.
+
+```powershell
+.\.venv\Scripts\python.exe -m emg_research.storage backup --output artifacts/backups/session-set-01.zip
+.\.venv\Scripts\python.exe -m emg_research.storage verify artifacts/backups/session-set-01.zip
+.\.venv\Scripts\python.exe -m emg_research.storage restore artifacts/backups/session-set-01.zip --data-dir D:\EMG\restored
+```
+
+The restore directory is an example. Keep a verified backup on an independent
+private device/service; a copy on the same disk does not protect against disk loss.
+No cloud upload is automatic. See [storage and repository integration](docs/INTEGRATION.md)
+for the reviewed branches, formats, configuration and remaining controller work.
+
+### Filtering and hardware limits
+
+**The standard Cyton USB radio streams at 250 Hz.** Its research waveform filter
+uses **20–100 Hz**. The **20–450 Hz** profile requires native **2 kHz** acquisition
+and is currently available only for synthetic development. Upsampling Cyton data
+does not restore the missing bandwidth. See the
+[OpenBCI sample-rate documentation](https://docs.openbci.com/Cyton/CytonSDK/#sample-rate).
+
+Both profiles use persistent causal SOS state and an optional 50/60 Hz notch
+(Q=30). They do not apply common-average subtraction or the original simulator's
+rectified control envelope. Tests verify filter stability, frequency response,
+and agreement between the browser and SciPy. These are validated starting
+profiles; the best cutoffs and notch settings still need evaluation on real
+training/validation recordings.
+
+The ADC also has a nominal −3 dB bandwidth of about **65 Hz at 250 SPS**, so the
+software passband is not a flat hardware response. Filter diagnostics include
+the nominal ADC response identified in the placement branch's research.
+[TI ADS1299 datasheet](https://www.ti.com/lit/ds/symlink/ads1299.pdf)
+
+Each waveform now has **positive, zero and negative µV ticks**. **Shared auto** is
+the default so channel amplitudes are comparable. Choose **Fixed** to hold one
+range across channels, or **Auto · each channel** to inspect weaker signals.
+Off-scale traces are flagged and clipped within their own row; changing the
+axis never changes recordings or CNN input. Min/max plotting preserves brief
+peaks instead of skipping every Nth sample.
+
+Segmentation retains **200 ms trailing windows / 50 ms scheduled hops**. Counter
+gaps, time gaps, clipping and uncertain timing reset preprocessing; a full second
+of clean recovery is excluded. The live predictor and dataset builder use the
+same rules. Amber traces show settling and paths break at rejected/missing data.
+Long acquisition gaps no longer emit duplicate windows from stale samples. Rebuild
+datasets and retrain existing models to use preprocessing version 2.
+
+### Build datasets and train
+
+Record complete, calibrated sessions assigned to each of **Training**, **Validation**
+and **Held-out test**, then run:
+
+```powershell
+.\.venv\Scripts\python.exe -m emg_research.dataset --sessions data/sessions --output artifacts/dataset.npz
+.\.venv\Scripts\python.exe -m emg_research.train --data artifacts/dataset.npz --output artifacts/model.pt --epochs 30
+```
+
+The dataset builder creates 200 ms windows with 50 ms scheduled updates and
+rejects invalid signal/label intervals. Whole recordings remain in one split;
+overlapping windows must never be randomly divided across splits. Synthetic
+recordings are excluded by default. Reload the app after training to enable
+**Compare a trained CNN**. Predictions are displayed but do not drive an actuator.
+
+Add `--require-arm` to the dataset command when every finger-training window must
+also have valid arm tracking. This rejects arm occlusions across the whole window
+and excludes older recordings without arm data; it does not add arm prediction
+targets. Leave it off for existing finger-only recordings.
+
+For RL infrastructure experiments:
+
+```powershell
+.\.venv\Scripts\python.exe -m emg_research.rl --algorithm ppo --steps 2048 --output artifacts/rl-ppo
+.\.venv\Scripts\python.exe -m emg_research.rl --algorithm sac --steps 2048 --output artifacts/rl-sac
+```
+
+The current RL environment uses a synthetic decoder surrogate. Connecting a frozen
+EMG model, a five-finger simulator, and real closed-loop experiments is future work.
+The [research guide](RESEARCH.md#reinforcement-learning-direction) distinguishes
+continuous residual control from the cited paper's offline AWAC classifier adaptation.
+
+### Validation and next steps
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+npm test
+.\.venv\Scripts\python.exe scripts/filter_report.py
+```
+
+The initial implementation passed **20 Python tests and four JavaScript tests**,
+including filter parity, recording retries, session split checks, model/RL
+interfaces, and a training → checkpoint → prediction API round trip. Browser
+checks covered synthetic recording/export at both rates and local MediaPipe
+worker loading. The 2 kHz test export contained 109,829 unique, ordered samples,
+matching its saved metadata. Four-epoch CNN training and short PPO/SAC runs also
+completed on synthetic data.
+
+The storage/integration follow-up passed **33 Python tests and four JavaScript
+tests**, adding verified backup/restore, placement import and wiring checks.
+Compatibility was also checked against the placement branch's own JavaScript
+record validator. See [integration validation](docs/INTEGRATION.md#validation).
+
+The arm/plot follow-up passed **38 Python tests and nine JavaScript tests**,
+including browser/SciPy parity across counter gaps, time gaps and clipping;
+occlusion-aware segmentation; arm-frame persistence; angle geometry; numeric
+axis scaling; and peak-preserving plot bins. Both local camera models ran in
+Chrome against a blank frame and Google's pose test photo, detecting both arms
+in the latter. Browser checks covered the three scale modes.
+Optional positive pose detection can be reproduced with:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/download_models.py --test-fixtures
+```
+
+Then open <http://localhost:8081/assets/vision-smoke.html> and choose **Check official
+pose fixture**. The test photo is downloaded from Google's MediaPipe test assets,
+verified against its upstream SHA-256, and ignored by Git.
+
+**Real Cyton acquisition, real camera-label quality, human decoding accuracy, and
+end-to-end latency still need validation.** Timestamps are browser-clock estimates,
+not hardware synchronization. Next steps are to collect separate real sessions,
+estimate EMG/camera delay from training data, compare filters and model baselines,
+then integrate the frozen decoder into simulation for RL experiments.
+
+### Research code map
+
+```text
+www/acquire/              acquisition UI, packet parser, live filters, hand + arm trackers
+emg_research/server.py    local recording/export and prediction API
+emg_research/signal.py    filter profiles and causal preprocessing
+emg_research/dataset.py   alignment, quality checks and training windows
+emg_research/model.py     temporal CNN and checkpoint loading
+emg_research/train.py     training, baselines and held-out-session evaluation
+emg_research/rl.py        residual-control simulation and PPO/SAC runners
+emg_research/synthetic.py reproducible synthetic recording generator
+emg_research/placement.py placement-export validation and import
+emg_research/storage.py   archive manifests, verification and restoration
+scripts/                 launch, model download and filter diagnostics
+tests/                   Python and JavaScript checks
+```
+
+## Original arm simulator
+
 Drive a simulated 4-axis wall-mounted robot arm with forearm/upper-arm muscle
 signals from an OpenBCI Cyton. The arm sticks straight out of the wall. Its base
 is a two-axis gimbal: yaw (left/right), then pitch (up/down). After that come an

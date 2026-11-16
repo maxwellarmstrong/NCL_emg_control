@@ -1,0 +1,8 @@
+.storage-box { margin: 18px 0; padding: 22px; border: 1px solid var(--line); border-radius: 9px; background: #eaf0eb; }
+.storage-box strong { font-size: 14px; }
+.storage-box code { display: block; margin: 12px 0; padding: 12px; background: #fff; border-radius: 6px; font-size: 12px; overflow-wrap: anywhere; }
+.storage-box p { font-size: 12px; max-width: 850px; }
+.storage-box small { display: block; font-size: 11px; color: var(--muted); line-height: 1.6; }
+.storage-actions { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin: 16px 0; }
+.storage-actions a { font-size: 13px; font-weight: 600; color: var(--green); }
+#import-status:empty { display: none; }
