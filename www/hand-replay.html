@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finger motion replay</title>
+<style>
+body{font:16px system-ui;color:#183635;background:#eff6f3;max-width:760px;margin:4vh auto;padding:0 20px}
+canvas{display:block;width:100%;height:auto;background:#153735;border-radius:12px;margin:1em 0}
+button,input{font:inherit}button{padding:.4em .9em}output{margin-left:.6em}
+</style>
+<h1>Finger motion replay</h1><label>Motion CSV <input id="file" type="file" accept=".csv,text/csv"></label>
+<canvas id="view" width="740" height="410" aria-label="Five articulated fingers viewed at an angle"></canvas>
+<button id="play" disabled>Play</button> <label><input type="checkbox" checked id="smooth"> Smooth motion</label>
+<output id="status" aria-live="polite">Choose a recording.</output>
+<script>
+const get = id => document.getElementById(id);
+const ctx = get('view').getContext('2d');
+const header = 'time_ms,segment,thumb,index,middle,ring,little';
+function parse(text) {
+  const lines=text.trim().split(/\r?\n/);
+  if(lines.shift()!==header) throw Error('Unexpected CSV header.');
+  const rows=[];
+  for(const line of lines){
+    const parts=line.split(',');
+    const [t,segment,...pose]=parts.map(Number);
+    if(parts.length!==7 || parts.some(v=>!v.trim()) || !Number.isFinite(t) || t<0 ||
+       !Number.isInteger(segment) || segment<0 || pose.some(v=>!(v>=0 && v<=1)) ||
+       (rows.length && t<=rows[rows.length-1].t)) throw Error('Invalid motion row '+(rows.length+2));
+    rows.push({t,segment,pose});
+  }
+  if(!rows.length) throw Error('Empty motion file.');
+  return rows;
+}
+function smoothRows(rows){
+  return rows.reduce((out,row,i)=>{
+    const last=out[i-1];
+    if(!last || last.segment!==row.segment || row.t-last.t>250) out.push(row);
+    else {
+      const gain=1-Math.exp(-(row.t-last.t)/65);
+      out.push({...row,pose:row.pose.map((v,j)=>last.pose[j]+gain*(v-last.pose[j]))});
+    }
+    return out;
+  },[]);
+}
+function poseAt(a,b,t){
+  if(!b || b.segment!==a.segment || b.t-a.t>250) return a.pose;
+  const w=(t-a.t)/(b.t-a.t);
+  return a.pose.map((v,j)=>v+(b.pose[j]-v)*w);
+}
+function draw(pose){
+  ctx.clearRect(0,0,740,410);
+  ctx.fillStyle='#789e96';ctx.beginPath();ctx.roundRect(285,177,176,157,32);ctx.fill();
+  const fingers=[[295,245,-1.02,89],[309,188,-.12,113],[352,178,-.04,130],[397,182,.06,120],[439,198,.19,92]];
+  fingers.forEach(([x,y,spread,length],f)=>{
+    let bend=0;
+    for(const fraction of [.45,.32,.23]){
+      bend+=pose[f]*.94;
+      const along=length*fraction*Math.cos(bend);
+      const depth=length*fraction*Math.sin(bend);
+      const nx=x+along*Math.sin(spread)+depth*.44;
+      const ny=y-along*Math.cos(spread)+depth*.58;
+      ctx.lineWidth=f===4?13:17;ctx.lineCap='round';ctx.strokeStyle='#badacb';
+      ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(nx,ny);ctx.stroke();
+      ctx.fillStyle='#548a81';ctx.beginPath();ctx.arc(x,y,4,0,2*Math.PI);ctx.fill();
+      x=nx;y=ny;
+    }
+  });
+}
+let raw=[],filtered=[],cursor=0,elapsed=0,lastClock=null,raf=0,loadId=0;
+function stop(){cancelAnimationFrame(raf);lastClock=null;get('play').textContent='Play';}
+function frame(now){
+  if(lastClock!==null) elapsed+=now-lastClock;
+  lastClock=now;
+  const rows=get('smooth').checked?filtered:raw;
+  const t=Math.min(rows[0].t+elapsed,rows[rows.length-1].t);
+  while(cursor+1<rows.length && rows[cursor+1].t<=t) cursor++;
+  draw(poseAt(rows[cursor],rows[cursor+1],t));
+  const next=rows[cursor+1];
+  get('status').textContent=next && next.segment!==rows[cursor].segment ? 'Tracking gap · holding pose' : ((t-rows[0].t)/1000).toFixed(1)+' s';
+  if(!next){stop();elapsed=cursor=0;get('play').textContent='Replay';}else raf=requestAnimationFrame(frame);
+}
+get('file').onchange=async()=>{
+  const id=++loadId;stop();elapsed=cursor=0;get('play').disabled=true;
+  try{
+    const rows=parse(await get('file').files[0].text());
+    if(id!==loadId)return;
+    raw=rows;filtered=smoothRows(rows);draw(raw[0].pose);get('play').disabled=false;
+    get('status').textContent=rows.length+' motion samples';
+  }catch(e){if(id===loadId)get('status').textContent=e.message;}
+};
+get('play').onclick=()=>{
+  if(lastClock!==null){stop();return;}
+  lastClock=performance.now();get('play').textContent='Pause';raf=requestAnimationFrame(frame);
+};
+draw([0,0,0,0,0]);
+</script></html>

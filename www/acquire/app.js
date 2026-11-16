@@ -1,3 +1,4 @@
+import {MovementTracker} from './movement.js';
 import {CytonSerial} from '/arm/serial.js';
 import {CytonParser, SignalProcessor, channelScales, waveformBins, armMeasurement, FINGERS, fingerAngles, calibratedFlexion, syntheticFlexion, median} from './core.js?v=4';
 
@@ -15,9 +16,31 @@ let pending = {emg:[],vision:[],events:[]};
 let prompting = false, promptStarted = 0, lastCue = -1;
 let lastStatsAt = performance.now(), lastStatsSamples = 0, lastPredictAt = 0;
 let lastPlotAt = -Infinity, lastScaleAt = -Infinity, scales = Array(8).fill(100);
-const cues = ['Rest · relax every finger','Thumb · slowly flex and extend','Index · slowly flex and extend',
-  'Middle · slowly flex and extend','Ring · slowly flex and extend','Little · slowly flex and extend',
-  'Thumb + index · move together','Middle + ring + little · move together'];
+let movementTracker=new MovementTracker(), lastMovementEvent='';
+const cues = [
+  "Rest · relax every finger",
+  "Elbow curl · keep your upper arm at your side and bring your hand toward your shoulder",
+  "Elbow extension · slowly straighten your elbow again",
+  "Thumb · slowly flex and extend",
+  "Index · slowly flex and extend",
+  "Forward raise · lift your upper arm in front of you to a comfortable height",
+  "Forward lower · bring your upper arm back to your side",
+  "Middle · slowly flex and extend",
+  "Ring · slowly flex and extend",
+  "Side raise · lift your upper arm out to the side",
+  "Side lower · bring it slowly back down",
+  "Little · slowly flex and extend",
+  "Make a fist · slowly close the whole hand",
+  "Open your hand · straighten all fingers",
+  "Reach forward · lift your upper arm and straighten your elbow",
+  "Draw back · bend your elbow and return your upper arm to your side",
+  "Thumb + index · move together",
+  "Middle + ring + little · move together",
+  "Curl and pause · bend your elbow halfway and hold",
+  "Extend and pause · straighten your elbow comfortably and hold",
+  "Bent-arm raise · keep your elbow bent and lift your upper arm",
+  "Bent-arm lower · keep the elbow bend as you lower your upper arm",
+];
 
 async function api(path, options={}) {
   const response = await fetch(path, {headers:{'Content-Type':'application/json'},...options});
@@ -26,6 +49,22 @@ async function api(path, options={}) {
 }
 function notice(message, error=false) { $('notice').textContent=message; $('notice').classList.toggle('error',error); }
 function event(type, data={}) { if (recording) pending.events.push({t_ms:performance.now(),type,data}); }
+let startingRecording=false;
+function labelPrompt(now) {
+  if ($('source').value==='synthetic' || $('allow-unlabeled').checked) return '';
+  if (!cameraStream) return 'Enable the camera to record finger labels.';
+  if (!calibration.open) return 'Hold your hand open and click Capture open hand.';
+  if (!calibration.closed) return 'Make a fist and click Capture closed hand.';
+  if (!calibratedFlexion(calibration.open, calibration)) return 'Recapture the poses with more bend in each finger.';
+  if (!latestVision || now-latestVision.t_ms>=250) return 'Waiting for a fresh camera frame.';
+  return latestVision.valid ? '' : 'Tracking needs attention: '+latestVision.reason+'.';
+}
+function updateRecordingReadiness(now) {
+  const prompt=labelPrompt(now);
+  if (!sessionId) $('record').disabled=startingRecording || !running || !!prompt;
+  const message=recording && prompt ? 'Finger labels interrupted. '+prompt : prompt;
+  if ($('label-help').textContent!==message) $('label-help').textContent=message;
+}
 function updateControls() {
   settings.forEach(id=>$(id).disabled=running||!!sessionId);
   ['participant','split','delay','hand'].forEach(id=>$(id).disabled=!!sessionId);
@@ -35,7 +74,9 @@ function updateControls() {
   $('camera').disabled=!!sessionId||!visionReady;
   $('import-placement').disabled=!!sessionId||!storageReady;
   if(sessionId) $('open-cal').disabled=$('closed-cal').disabled=true;
+  $('allow-unlabeled').disabled=!!sessionId || startingRecording;
   $('record').disabled=!running&&!sessionId;
+  updateRecordingReadiness(performance.now());
   $('record').innerHTML=sessionId?(recording?'■ Finish & save recording':'Retry save & finish'):'<span>●</span> Start recording';
   $('record').classList.toggle('recording-now',!!sessionId);
   $('state').textContent=recording?'Recording locally':running?'Live preview':'Ready to connect';
@@ -63,6 +104,11 @@ function acceptSamples(samples) {
     if(lastIndex!==null) packetGaps+=Math.max(0,sample.index-lastIndex-1);
     lastIndex=sample.index; lastSampleTime=sample.t_ms; sampleCount++;
     const point=processor.process(sample);
+    if (sample.clipped && sample.counts) {
+      const clipped = sample.counts.flatMap((count, i) =>
+        Math.abs(count) >= 0.95 * 8388607 ? [`CH${i+1}`] : []);
+      if (clipped.length) point.reason = 'ADC clipping · ' + clipped.join(', ');
+    }
     plot.push(point);
     if(!point.valid||point.gap) {filteredWindow=[];prediction=null;}
     if(point.valid) filteredWindow.push(point.values);
@@ -137,9 +183,28 @@ $('connect').onclick=async()=>{
   updateControls();
 };
 
+function reportMovement(t, labels) {
+  const key=JSON.stringify(labels);
+  if(recording && key!==lastMovementEvent) {
+    pending.events.push({t_ms:t,type:'camera_movement',data:labels});
+    lastMovementEvent=key;
+  }
+}
 function acceptVision(frame) {
   latestVision=frame;frameCount++;if(frame.valid)validFrames++;
   if(recording) pending.vision.push(frame);
+  if(cameraStream && $('source').value!=='synthetic') {
+    const labels=movementTracker.classify(frame);
+    reportMovement(frame.t_ms,labels);
+    $('hand-measure').textContent=frame.valid
+      ? Math.round(100*frame.flexion.slice(1).reduce((sum,v)=>sum+v,0)/4)+'% bend (four fingers)'
+      : frame.reason;
+    for(const [part,label] of Object.entries(labels)) {
+      const measured=part==='elbow'?frame.arm?.elbow_flexion_deg:frame.arm?.upper_arm_to_torso_deg;
+      const waiting=part!=='hand' && frame.arm?.valid && Number.isFinite(measured);
+      $(part+'-label').textContent=label ?? (waiting?'Measuring…':'Unavailable');
+    }
+  }
 }
 function handleVision(data) {
   frameBusy=false;
@@ -192,7 +257,14 @@ async function sendCameraFrame(now, metadata={}) {
   }else if(frameBusy)skippedFrames++;
   if(cameraStream&&$('video').requestVideoFrameCallback)frameHandle=$('video').requestVideoFrameCallback(sendCameraFrame);
 }
+function resetCameraMotion() {
+  movementTracker=new MovementTracker();
+  for(const id of ['hand-measure','hand-label','elbow-label','upper_arm-label','elbow-angle','shoulder-angle']) $(id).textContent='—';
+}
 async function stopCamera() {
+  resetCameraMotion();
+  calibration={open:null,closed:null};
+  angleHistory=[];previousAngles=null;
   if(frameHandle) $('video').cancelVideoFrameCallback?.(frameHandle);
   clearInterval(frameFallback);
   cameraStream?.getTracks().forEach(track=>track.stop());cameraStream=null;
@@ -222,13 +294,13 @@ $('camera').onclick=async()=>{
     event('camera_started');
   }catch(e){await stopCamera();notice(`Camera: ${e.message}`,true);}
 };
-$('hand').onchange=()=>{calibration={open:null,closed:null};angleHistory=[];previousAngles=null;latestVision=null;drawHand(null);$('elbow-angle').textContent=$('shoulder-angle').textContent='—';notice('Side selection changed. Capture both hand calibration poses again.');};
+$('hand').onchange=()=>{resetCameraMotion();calibration={open:null,closed:null};angleHistory=[];previousAngles=null;latestVision=null;drawHand(null);$('elbow-angle').textContent=$('shoulder-angle').textContent='—';notice('Side selection changed. Capture both hand calibration poses again.');};
 for(const pose of ['open','closed']) $(pose+'-cal').onclick=()=>{
   const rows=angleHistory.filter(x=>performance.now()-x.t<1200);
   if(rows.length<10||rows.at(-1).t-rows[0].t<400){notice('Keep the full hand visible and hold the pose steady for one second.',true);return;}
   const center=median(rows.map(x=>x.values));
   if(rows.some(r=>r.values.some((v,i)=>Math.abs(v-center[i])>15))){notice('The pose moved during calibration. Hold it still and try again.',true);return;}
-  calibration[pose]=center;$(pose+'-cal').textContent=pose==='open'?'Open pose captured ✓':'Closed pose captured ✓';
+  calibration[pose]=center;latestVision=null;resetCameraMotion();$(pose+'-cal').textContent=pose==='open'?'Open pose captured ✓':'Closed pose captured ✓';
   if(calibration.open&&calibration.closed&&!calibratedFlexion(center,calibration))notice('Open-to-closed range is too small for one or more fingers. Re-capture both poses with all fingertips visible.',true);
   else notice(`${pose==='open'?'Open':'Closed'} pose captured. ${calibration.open&&calibration.closed?'Visual labels are calibrated.':'Capture the other pose next.'}`);
 };
@@ -263,10 +335,16 @@ async function finishRecording() {
 $('record').onclick=async()=>{
   try{
     if(sessionId){await finishRecording();return;}
+    if (startingRecording) return;
+    const prompt=labelPrompt(performance.now());
+    if (prompt) {notice(prompt,true);return;}
+    startingRecording=true;
+    updateControls();
     const config={source:$('source').value,sample_rate_hz:profile.sample_rate_hz,participant:$('participant').value.trim(),
       split:$('split').value,wiring:$('wiring').value,mains_hz:Number($('mains').value),hand:$('hand').value,
       label_delay_ms:Number($('delay').value),client_time_origin_ms:performance.timeOrigin,notes:''};
     const result=await api('/api/sessions',{method:'POST',body:JSON.stringify(config)});
+    lastMovementEvent='';
     sessionId=result.id;recording=true;recordedAt=performance.now();batchId=0;savedCounts=null;
     pending={emg:[],vision:[],events:[]};
     event('recording_started',{calibration,source_started_ms:sourceStarted,preprocessing_version:2,
@@ -277,8 +355,7 @@ $('record').onclick=async()=>{
     $('record-title').textContent='Recording in progress.';
     if(!latestVision?.valid)notice('Recording raw EMG without valid visual labels. Finish this recording, then calibrate the camera before your next supervised session.');
     else notice('Recording raw EMG and visual labels locally. Finish recording before closing the tab.');
-    updateControls();
-  }catch(e){notice(e.message,true);}
+  }catch(e){notice(e.message,true);}finally{startingRecording=false;updateControls();}
 };
 window.addEventListener('beforeunload',e=>{if(sessionId){e.preventDefault();e.returnValue='';}});
 document.addEventListener('visibilitychange',()=>event('page_visibility',{state:document.visibilityState}));
@@ -293,7 +370,25 @@ async function refreshSessions(){
     const placement=row.recording_kind==='placement';
     const small=document.createElement('small');small.textContent=placement?`Placement · ${row.placement?.movement??'trial'} · ${row.config.active_channels} active channels`:new Date(row.created_utc).toLocaleString();identity.append(small);div.append(identity);
     for(const text of [`${row.config.source==='synthetic'?'Synthetic':'Cyton'} · ${row.config.sample_rate_hz} Hz`,`${placement?'CUE LABELS':row.config.split.toUpperCase()} · ${row.status}`,`${row.counts.emg.toLocaleString()} samples`]){const el=document.createElement('span');el.textContent=text;if(text.startsWith('Synthetic'))el.className='synthetic';div.append(el);}
-    const a=document.createElement('a');a.textContent=row.status==='recording'?'Recording…':'Download ZIP ↗';if(row.status!=='recording')a.href=`/api/sessions/${row.id}/export`;div.append(a);$('session-list').append(div);
+    const a=document.createElement('a');a.textContent=row.status==='recording'?'Recording…':'Download ZIP ↗';if(row.status!=='recording')a.href=`/api/sessions/${row.id}/export`;div.append(a);
+    if (!placement && row.status === 'complete') {
+      for (const source of ['vision', 'emg']) {
+        const button=document.createElement('button');
+        button.textContent=source === 'vision' ? 'Finger labels CSV' : 'EMG predictions CSV';
+        button.onclick=async()=>{
+          try {
+            const response=await fetch(`/api/sessions/${row.id}/motion/${source}.csv`);
+            if(!response.ok) throw new Error((await response.json()).detail);
+            const url=URL.createObjectURL(await response.blob());
+            const download=document.createElement('a');
+            download.href=url; download.download=`${row.id}-${row.config.source}-${source}.csv`;
+            download.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+          } catch(error) { notice(error.message,true); }
+        };
+        div.append(button);
+      }
+    }
+    $('session-list').append(div);
   }
 }
 $('refresh').onclick=()=>refreshSessions().catch(e=>notice(e.message,true));
@@ -314,7 +409,7 @@ $('placement-file').onchange=async()=>{
 FINGERS.forEach(name=>{const row=document.createElement('div');row.className='finger-row';row.innerHTML=`<span>${name}</span><div class="finger-track"><div class="measured"></div><div class="predicted"></div></div><output>—</output>`;$('finger-bars').append(row);});
 for(const id of ['scale-mode','scale-range'])$(id).onchange=()=>{
   lastScaleAt=-Infinity;
-  $('scale-range').disabled=$('scale-mode').value!=='fixed';
+  if(id==='scale-range') $('scale-mode').value='fixed';
 };
 function drawSignal(now){
   if(now-lastPlotAt<50)return;
@@ -375,16 +470,30 @@ async function updatePrediction(now){
   if(!$('predict').checked||predictionBusy||!running||now-lastSampleTime>250||now-lastPredictAt<100||filteredWindow.length!==profile.sample_rate_hz*.2)return;
   lastPredictAt=now;predictionBusy=true;
   const segment=processor.segment, predictionProcessor=processor;
+  const motionSession=recording ? sessionId : null, windowEnd=lastSampleTime;
   try{const result=await api('/api/predict',{method:'POST',body:JSON.stringify({sample_rate_hz:profile.sample_rate_hz,mains_hz:profile.mains_hz,wiring:$('wiring').value,filtered_uv:filteredWindow})});
     if(!running||processor!==predictionProcessor||processor.segment!==segment||performance.now()-lastSampleTime>250)return;
     prediction=result;
+    if (recording && sessionId === motionSession && $('predict').checked) {
+      event('decoder_motion', {t_ms:windowEnd, segment, flexion:result.flexion});
+    }
     $('model-status').textContent=`${prediction.training_source==='synthetic'?'Synthetic-trained demo · not validated on people':'Local CNN'} · predicts visual flexion ${prediction.label_delay_ms>=0?'+':''}${prediction.label_delay_ms} ms from window end`;
   }catch(e){$('predict').checked=false;$('model-status').textContent=e.message;prediction=null;}
   finally{predictionBusy=false;}
 }
 function draw(now){
+  updateRecordingReadiness(now);
+  const calibrated=calibratedFlexion(calibration.open,calibration);
+  const steps=calibrated?2:Number(!!(calibration.open||calibration.closed));
+  $('cal-progress').value=steps;
+  const instruction=!cameraStream?'Enable camera to begin.':calibrated?'Ready · move your fingers to check the live percentages.':
+    !calibration.open?'Hold hand open for one second, then capture.':!calibration.closed?'Hold a fist for one second, then capture.':
+    'Finger range too small. Recapture open hand and fist.';
+  const status=`${steps}/2 poses · ${instruction}`;
+  if($('cal-progress-text').textContent!==status) $('cal-progress-text').textContent=status;
   drawSignal(now);
   if(latestVision&&now-latestVision.t_ms>=500&&cameraStream){
+    resetCameraMotion();reportMovement(now,{hand:null,elbow:null,upper_arm:null});
     drawHand(null);$('elbow-angle').textContent=$('shoulder-angle').textContent='—';
     $('arm-status').textContent='Waiting for a fresh arm measurement…';
   }

@@ -2,6 +2,8 @@ import init, { App } from './pkg/arm_sim.js';
 import { CytonSerial } from './serial.js';
 import { CytonSimulator } from './simulator.js';
 
+import {LiveControl, digits} from './trained-control.js';
+
 const NUM_CH = 8;
 const KEYS = [['q', 'a'], ['w', 's'], ['e', 'd'], ['r', 'f']];
 // Electrode site of each channel (see the electrode guide) and the movement to
@@ -100,14 +102,66 @@ canvas.addEventListener('wheel', (e) => {
 // ---- control source --------------------------------------------------------
 
 let source = 'manual';
+let imported = null;
+
+function consumePackets(bytes) {
+  app.push_serial(bytes);
+  if (source === 'trained') imported.feed(bytes, performance.now());
+}
+
+$('training-zip').onchange = () => {
+  const input = $('training-zip');
+  const file = input.files[0];
+  if (!file) return;
+  input.disabled = true;
+  $('training-status').textContent = 'Calibrating and learning from the recording…';
+  const worker = new Worker(new URL('./archive-worker.js', import.meta.url), {type:'module'});
+  function finish(model, error) {
+    worker.terminate();
+    input.disabled = false;
+    input.value = '';
+    if (error) {
+      $('training-status').textContent = error;
+      return;
+    }
+    if (serial && (model.wiring !== $('wiring').value || model.source !== 'cyton')) {
+      $('training-status').textContent = 'Disconnect the board before importing a different wiring profile or synthetic recording.';
+      return;
+    }
+    stopCalibration();
+    imported = new LiveControl(model);
+    $('wiring').value = model.wiring;
+    applyWiring();
+    $('trained-source').disabled = false;
+    setScheme('finger');
+    setSource('trained');
+    const learned = digits.filter((_,i)=>model.patterns[i]).join(', ');
+    $('training-status').textContent = (model.source === 'synthetic' ? 'Synthetic demo' : 'Cyton calibration')
+      + ' · ' + model.wiring + ' · learned ' + learned + '.';
+    updateButtons();
+  }
+  worker.onmessage = ({data}) => finish(data.model, data.error);
+  worker.onerror = () => finish(null, 'Training worker failed. Open the simulator on localhost and retry.');
+  worker.postMessage(file);
+};
 
 function setSource(src) {
+  if (src === 'trained') {
+    if (!imported || (serial && (imported.model.source !== 'cyton' || imported.model.wiring !== $('wiring').value))) return;
+    if(source !== 'trained') imported.reset();
+    $('wiring').value = imported.model.wiring;
+    applyWiring();
+  }
   source = src;
+  updateButtons();
+  refreshFingerStatus();
   app.set_use_emg(src === 'emg');
   for (const b of $('source').querySelectorAll('button')) {
     b.classList.toggle('active', b.dataset.src === src);
   }
-  $('source-hint').textContent = src !== 'emg'
+  $('source-hint').textContent = src === 'trained'
+    ? 'Rest to stop. A light curl moves the assigned joint backward and a firm curl moves it forward. Use the same electrodes and channel order as the recording.'
+    : src !== 'emg'
     ? 'Keys Q/A · W/S · E/D · R/F, or drag the sliders (they spring back to 0).'
     : scheme === 'finger'
       ? 'Arm follows finger tension. With Simulate on, Q/W/E/R = firmer (+) and A/S/D/F = faint (−) on the finger driving that joint (Shift = a real movement); 1/2/3 = arm limp / forearm raised / arm up.'
@@ -116,6 +170,7 @@ function setSource(src) {
 
 $('source').addEventListener('click', (e) => {
   const src = e.target.dataset?.src;
+  if (src === 'trained' && scheme !== 'finger') setScheme('finger');
   if (src) setSource(src);
 });
 
@@ -401,6 +456,19 @@ function postureText() {
 }
 
 function drawFingerRows() {
+  if (source === 'trained') {
+    $('fposture').textContent = '';
+    fingerRows.forEach((r, f) => {
+      const learned = Boolean(imported.model.patterns[f]);
+      const value = performance.now()-imported.last <= 250 ? imported.command[f] : 0;
+      r.row.classList.toggle('uncal', !learned);
+      r.state.className = 'state mono';
+      r.state.textContent = learned ? value.toFixed(2) : '—';
+      r.note.textContent = learned ? 'ZIP calibrated' : 'No isolated example';
+      drawTrack(r.track, 1, [[0,1,'rest']], null, Math.abs(value), Math.abs(value)>0.05);
+    });
+    return;
+  }
   const pose = postureText();
   $('fposture').innerHTML = pose ? `<span>Arm posture</span><span>${pose}</span>` : '';
   const powers = app.finger_powers();
@@ -422,6 +490,12 @@ function drawFingerRows() {
 }
 
 function refreshFingerStatus() {
+  $('fsimple').disabled = source === 'trained';
+  if (source === 'trained') {
+    $('ftrain').disabled = true;
+    $('fcal-status').textContent = 'Using the ZIP calibration. Choose the joint for each learned finger below.';
+    return;
+  }
   const trained = app.finger_trained();
   $('ftrain').disabled = !trained;
   $('fcal-status').textContent = trained
@@ -431,6 +505,7 @@ function refreshFingerStatus() {
 
 function setScheme(s) {
   if (coach.active) stopCalibration();
+  if (s !== 'finger' && source === 'trained') setSource('emg');
   scheme = s;
   app.set_finger_mode(s === 'finger');
   document.body.classList.toggle('fingers', s === 'finger');
@@ -481,7 +556,7 @@ function updateButtons() {
   $('simulate').textContent = sim ? 'Stop simulation' : 'Simulate';
   $('connect').disabled = Boolean(sim);
   $('simulate').disabled = Boolean(serial);
-  $('wiring').disabled = Boolean(serial); // channel config is sent on connect
+  $('wiring').disabled = Boolean(serial) || source === 'trained'; // channel config is sent on connect
 }
 
 $('connect').onclick = async () => {
@@ -493,11 +568,17 @@ $('connect').onclick = async () => {
     setBci('Web Serial is unavailable. Use Chrome or Edge on http://localhost.');
     return;
   }
+  if (source === 'trained' && imported.model.source !== 'cyton') {
+    setBci('Choose a real Cyton training ZIP for live control, or select EMG for standard control.');
+    return;
+  }
+  imported?.reset();
   serial = new CytonSerial({
     wiring: $('wiring').value,
-    onData: (bytes) => app.push_serial(bytes),
+    onData: consumePackets,
     onStatus: setBci,
     onClose: () => {
+      imported?.reset();
       serial = null;
       stopCalibration();
       updateButtons();
@@ -509,7 +590,7 @@ $('connect').onclick = async () => {
   app.reset_stream();
   try {
     await serial.connect();
-    setSource('emg');
+    if (source !== 'trained') setSource('emg');
   } catch (err) {
     const msg = err.name === 'NotFoundError' ? 'No port selected.' : err.message;
     await serial?.disconnect();
@@ -520,6 +601,7 @@ $('connect').onclick = async () => {
 };
 
 $('simulate').onclick = () => {
+  imported?.reset();
   if (sim) {
     sim = null;
     stopCalibration();
@@ -528,7 +610,7 @@ $('simulate').onclick = () => {
     applyWiring();
     app.reset_stream();
     sim = new CytonSimulator({ differential: $('wiring').value === 'bipolar' });
-    setSource('emg');
+    if (source !== 'trained') setSource('emg');
     setBci('Simulating a Cyton. Hold the joint keys to contract the mapped channels.');
   }
   updateButtons();
@@ -589,7 +671,13 @@ function simulateFingers() {
 
 function pumpSimulator(now) {
   const levels = new Float32Array(NUM_CH);
-  if (scheme === 'finger') {
+  if (source === 'trained') {
+    const mapping = app.finger_joints();
+    for (let i=0; i<4; i++) {
+      const [up,down] = KEYS[mapping[i]];
+      sim.setFingerLevel(i, held.has(up) ? 1 : held.has(down) ? 0.3 : 0);
+    }
+  } else if (scheme === 'finger') {
     simulateFingers();
   } else {
     const level = shift ? 1 : SIM_LEVEL;
@@ -605,7 +693,7 @@ function pumpSimulator(now) {
   }
   levels.forEach((v, ch) => sim.setLevel(ch, v));
   const bytes = sim.pump(now);
-  if (bytes.length) app.push_serial(bytes);
+  if (bytes.length) consumePackets(bytes);
 }
 
 // ---- guided calibration ------------------------------------------------------
@@ -660,6 +748,7 @@ function showCoachParts(running) {
 /** kind: 'muscle' (muscle-pair calibration) or 'finger' (finger calibration / training). */
 function startCalibration(begin, kind = 'muscle') {
   if (!requireStream()) return;
+  if (source === 'trained') setSource('emg');
   begin();
   let segments;
   if (kind === 'finger') {
@@ -1267,8 +1356,8 @@ function updateUi(now) {
 
   const pill = $('mode-pill');
   const uncal = source === 'emg' && !(scheme === 'finger' ? app.finger_trained() : app.is_calibrated());
-  pill.textContent = source === 'emg' ? (uncal ? 'EMG · uncalibrated' : 'EMG') : 'Manual';
-  pill.className = `pill ${source === 'emg' ? (uncal ? 'warn' : 'emg') : ''}`;
+  pill.textContent = source === 'trained' ? 'ZIP-trained EMG' : source === 'emg' ? (uncal ? 'EMG · uncalibrated' : 'EMG') : 'Manual';
+  pill.className = `pill ${source === 'trained' ? 'emg' : source === 'emg' ? (uncal ? 'warn' : 'emg') : ''}`;
 }
 
 function frame(now) {
@@ -1279,6 +1368,7 @@ function frame(now) {
     joints.forEach((j, i) => app.set_input(i, keyAxis(i) || Number(j.slider.value)));
   }
   if (sim) pumpSimulator(now);
+  if (source === 'trained') imported.inputs(now, app.finger_joints()).forEach((v,i)=>app.set_input(i,v*Number($('fspeed').value)));
   app.frame(dt);
   drawCoach(now);
   drawIntent();

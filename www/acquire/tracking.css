@@ -12,3 +12,7 @@
 .arm-readouts output { display: block; font-size: 25px; font-variant-numeric: tabular-nums; margin: 5px 0; }
 #arm-status { color: #8b6635; min-height: 2.8em; }
 @media(max-width: 750px) { .signal-key strong { margin-left: 0; } }
+
+.camera-observations table {width:100%; border-collapse:collapse; font-size:.86rem;}
+.camera-observations th,.camera-observations td {text-align:left; padding:.55em .3em; border-bottom:1px solid #d9e4df;}
+.camera-observations tbody td:last-child {font-weight:600; color:#176553; text-transform:capitalize;}

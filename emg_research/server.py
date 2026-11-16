@@ -294,6 +294,27 @@ def list_sessions():
     return sessions
 
 
+@app.get("/api/sessions/{session_id}/motion/{source}.csv")
+def export_motion(session_id: str, source: str):
+    import io
+    from fastapi.responses import Response
+    from .motion_csv import write_motion
+
+    path = session_path(session_id)
+    meta_path = path / "metadata.json"
+    if source not in ("vision", "emg") or not meta_path.exists():
+        raise HTTPException(404, "Unknown motion source or session")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    if meta.get("status") != "complete":
+        raise HTTPException(409, "Finish recording before exporting motion")
+    output = io.StringIO(newline="")
+    if not write_motion(path, source, output):
+        raise HTTPException(404, "No valid motion for this source in the recording")
+    filename = f"{session_id}-{meta['config']['source']}-{source}.csv"
+    return Response(output.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
 @app.get("/api/sessions/{session_id}/export")
 def export_session(session_id: str):
     path = session_path(session_id)
