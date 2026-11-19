@@ -1,4 +1,4 @@
-import {MovementTracker} from './movement.js';
+import {MovementTracker, classifyHandGesture} from './movement.js';
 import {CytonSerial} from '/arm/serial.js';
 import {CytonParser, SignalProcessor, channelScales, waveformBins, armMeasurement, FINGERS, fingerAngles, calibratedFlexion, syntheticFlexion, median} from './core.js?v=4';
 
@@ -13,34 +13,53 @@ let calibration = {open:null,closed:null}, angleHistory = [], previousAngles = n
 let frameCount = 0, validFrames = 0, skippedFrames = 0, syntheticVisionAt = -1;
 let sessionId = null, recording = false, recordedAt = 0, savedCounts = null, batchId = 0, saving = null;
 let pending = {emg:[],vision:[],events:[]};
-let prompting = false, promptStarted = 0, lastCue = -1;
+let trialProtocol = {active:false, queue:[], index:0, phase:'idle', phaseStarted:0,
+  current:null, trialId:null, holdMs:2000, restMs:2000, trialNumber:0, accepted:0, excluded:0};
+const gestureClasses = [
+  {id:0, key:'rest', label:'Rest · relax your hand, fingers and arm.', detail:'Sit still. Let your fingers, wrist and arm rest without squeezing or lifting.', sensor:'prompt_only', labelSource:'participant_prompt'},
+  {id:1, key:'open_hand', label:'Open hand · straighten your fingers.', detail:'Keep your wrist still and spread or straighten all fingers comfortably. Hold the open pose.', sensor:'hand', labelSource:'camera_hand_flexion'},
+  {id:2, key:'fist', label:'Close hand · make a comfortable fist.', detail:'Keep your wrist still and slowly curl all fingers into a comfortable fist. Do not squeeze as hard as possible.', sensor:'hand', labelSource:'camera_hand_flexion'},
+  {id:3, key:'pinch', label:'Pinch · touch thumb to index finger.', detail:'Keep the other fingers relaxed. Bring the thumb and index fingertip together and hold.', sensor:'hand', labelSource:'camera_hand_flexion'},
+  {id:4, key:'bicep_curl', label:'Bicep curl · bend your elbow.', detail:'Keep your upper arm near your side. Bend your elbow to bring your hand toward your shoulder, then hold.', sensor:'elbow', labelSource:'camera_elbow_angle'},
+  {id:5, key:'elbow_extend', label:'Elbow extension · straighten your arm.', detail:'Keep your upper arm near your side. Slowly straighten your elbow without raising your shoulder, then hold.', sensor:'elbow', labelSource:'camera_elbow_angle'},
+  {id:6, key:'arm_raise_forward', label:'Raise arm forward · lift to shoulder height.', detail:'With your elbow mostly straight, raise your arm in front of you to about shoulder height. Keep your torso still.', sensor:'shoulder', labelSource:'camera_upper_arm_angle'},
+  {id:7, key:'arm_raise_side', label:'Raise arm sideways · lift to shoulder height.', detail:'With your elbow mostly straight, raise your arm out to the side to about shoulder height. Keep your torso still.', sensor:'shoulder', labelSource:'camera_upper_arm_angle'},
+  {id:8, key:'forearm_supination', label:'Rotate forearm · turn palm up.', detail:'Keep your elbow tucked beside your body and rotate your forearm until your palm faces up. Keep the upper arm still.', sensor:'prompt_only', labelSource:'participant_prompt'},
+  {id:9, key:'forearm_pronation', label:'Rotate forearm · turn palm down.', detail:'Keep your elbow tucked beside your body and rotate your forearm until your palm faces down. Keep the upper arm still.', sensor:'prompt_only', labelSource:'participant_prompt'},
+  {id:10, key:'wrist_flexion', label:'Wrist flexion · bend palm inward.', detail:'Rest your forearm on a table if comfortable. Bend your wrist so your palm moves toward the underside of your forearm.', sensor:'prompt_only', labelSource:'participant_prompt'},
+  {id:11, key:'wrist_extension', label:'Wrist extension · bend hand back.', detail:'Keep your forearm still. Bend your wrist so the back of your hand moves toward the top of your forearm.', sensor:'prompt_only', labelSource:'participant_prompt'},
+  {id:12, key:'wrist_radial_deviation', label:'Wrist tilt · move toward thumb side.', detail:'Keep your palm facing down and forearm still. Move your hand sideways toward your thumb.', sensor:'prompt_only', labelSource:'participant_prompt'},
+  {id:13, key:'wrist_ulnar_deviation', label:'Wrist tilt · move toward little-finger side.', detail:'Keep your palm facing down and forearm still. Move your hand sideways toward your little finger.', sensor:'prompt_only', labelSource:'participant_prompt'},
+  {id:14, key:'release_pinch', cameraKey:'open_hand', label:'Release pinch · open your fingers.', detail:'Start with thumb and index touching. Slowly separate them and relax your fingers into an open hand.', sensor:'hand', labelSource:'camera_hand_flexion'},
+  {id:15, key:'arm_lower_forward', label:'Lower arm · return it from the forward raise.', detail:'From the forward-raised position, slowly lower your arm back to your side.', sensor:'shoulder', labelSource:'camera_upper_arm_angle'},
+  {id:16, key:'arm_lower_side', label:'Lower arm · return it from the side raise.', detail:'From the side-raised position, slowly lower your arm back to your side.', sensor:'shoulder', labelSource:'camera_upper_arm_angle'},
+];
+const movementPairs = [
+  {key:'hand_open_close', label:'Open hand ↔ close hand', gestures:['open_hand','fist']},
+  {key:'pinch_release', label:'Pinch ↔ release pinch', gestures:['pinch','release_pinch']},
+  {key:'elbow_curl_extend', label:'Bicep curl ↔ elbow extension', gestures:['bicep_curl','elbow_extend']},
+  {key:'forward_raise_lower', label:'Raise arm forward ↔ lower arm', gestures:['arm_raise_forward','arm_lower_forward']},
+  {key:'side_raise_lower', label:'Raise arm sideways ↔ lower arm', gestures:['arm_raise_side','arm_lower_side']},
+  {key:'forearm_palm_up_down', label:'Rotate forearm palm up ↔ palm down', gestures:['forearm_supination','forearm_pronation']},
+  {key:'wrist_flex_extend', label:'Wrist flexion ↔ wrist extension', gestures:['wrist_flexion','wrist_extension']},
+  {key:'wrist_tilt', label:'Wrist tilt thumb side ↔ little-finger side', gestures:['wrist_radial_deviation','wrist_ulnar_deviation']},
+].map(pair=>({...pair,gestures:pair.gestures.map(key=>gestureClasses.find(item=>item.key===key))}));
+function selectedPair() { return movementPairs.find(item=>item.key===$('trial-pair').value) || movementPairs[0]; }
+function gestureReadiness(gesture,now=performance.now()) {
+  if(!cameraStream||!cameraReady)return 'Enable the camera before starting guided prompts.';
+  if(!latestVision||now-latestVision.t_ms>=250)return 'Waiting for a fresh camera frame.';
+  if(gesture.sensor==='hand'&&!calibratedFlexion(calibration.open,calibration))return 'Capture open-hand and fist calibration poses before training hand movements.';
+  if(gesture.sensor==='elbow'&&(!latestVision.arm?.valid||!Number.isFinite(latestVision.arm.elbow_flexion_deg)))return 'Show your shoulder, elbow and wrist clearly so the camera can measure elbow motion.';
+  if(gesture.sensor==='shoulder'&&(!latestVision.arm?.valid||!Number.isFinite(latestVision.arm.upper_arm_to_torso_deg)))return 'Show your shoulder, elbow and hip clearly so the camera can estimate arm raising.';
+  return '';
+}
+function pairReadiness(pair=selectedPair(),now=performance.now()) {
+  for(const gesture of pair.gestures){const message=gestureReadiness(gesture,now);if(message)return message;}
+  return '';
+}
 let lastStatsAt = performance.now(), lastStatsSamples = 0, lastPredictAt = 0;
 let lastPlotAt = -Infinity, lastScaleAt = -Infinity, scales = Array(8).fill(100);
-let movementTracker=new MovementTracker(), lastMovementEvent='';
-const cues = [
-  "Rest · relax every finger",
-  "Elbow curl · keep your upper arm at your side and bring your hand toward your shoulder",
-  "Elbow extension · slowly straighten your elbow again",
-  "Thumb · slowly flex and extend",
-  "Index · slowly flex and extend",
-  "Forward raise · lift your upper arm in front of you to a comfortable height",
-  "Forward lower · bring your upper arm back to your side",
-  "Middle · slowly flex and extend",
-  "Ring · slowly flex and extend",
-  "Side raise · lift your upper arm out to the side",
-  "Side lower · bring it slowly back down",
-  "Little · slowly flex and extend",
-  "Make a fist · slowly close the whole hand",
-  "Open your hand · straighten all fingers",
-  "Reach forward · lift your upper arm and straighten your elbow",
-  "Draw back · bend your elbow and return your upper arm to your side",
-  "Thumb + index · move together",
-  "Middle + ring + little · move together",
-  "Curl and pause · bend your elbow halfway and hold",
-  "Extend and pause · straighten your elbow comfortably and hold",
-  "Bent-arm raise · keep your elbow bent and lift your upper arm",
-  "Bent-arm lower · keep the elbow bend as you lower your upper arm",
-];
+let movementTracker=new MovementTracker(), lastMovementEvent='', lastCameraFeedKey='';
 
 async function api(path, options={}) {
   const response = await fetch(path, {headers:{'Content-Type':'application/json'},...options});
@@ -49,6 +68,7 @@ async function api(path, options={}) {
 }
 function notice(message, error=false) { $('notice').textContent=message; $('notice').classList.toggle('error',error); }
 function event(type, data={}) { if (recording) pending.events.push({t_ms:performance.now(),type,data}); }
+function timedEvent(t_ms,type,data={}) { if(recording) pending.events.push({t_ms,type,data}); }
 let startingRecording=false;
 function labelPrompt(now) {
   if ($('source').value==='synthetic' || $('allow-unlabeled').checked) return '';
@@ -65,6 +85,59 @@ function updateRecordingReadiness(now) {
   const message=recording && prompt ? 'Finger labels interrupted. '+prompt : prompt;
   if ($('label-help').textContent!==message) $('label-help').textContent=message;
 }
+function cameraTarget() {
+  return trialProtocol.active&&['prepare','active','review'].includes(trialProtocol.phase)
+    ?trialProtocol.current?.gesture:null;
+}
+function cameraElapsedLabel(t) {
+  const origin=recording?recordedAt:sourceStarted;
+  const seconds=Math.max(0,Math.floor((t-(origin||t))/1000));
+  return `${Math.floor(seconds/60).toString().padStart(2,'0')}:${(seconds%60).toString().padStart(2,'0')}`;
+}
+function updateCameraGestureFeed(frame,result) {
+  const target=cameraTarget(),phase=trialProtocol.phase;
+  const targetLabel=target?.label??'No active trial';
+  let feedback='Preview only',kind='preview',classification=result.label,detail=result.detail??'',measurement=null;
+  if(target&&phase==='prepare'){feedback='Get ready for prompt';kind='waiting';}
+  else if(target?.sensor==='elbow'){
+    measurement=frame.arm?.elbow_flexion_deg;
+    const visible=Number.isFinite(measurement);
+    classification=visible?`Elbow angle · ${Math.round(measurement)}°`:'Elbow not visible';
+    detail='Camera records elbow angle; check that you performed the prompted direction.';
+    feedback=visible?'Angle visible · follow the prompt':'Show shoulder, elbow and wrist';kind=visible?'uncertain':'mismatch';
+  }else if(target?.sensor==='shoulder'){
+    measurement=frame.arm?.upper_arm_to_torso_deg;
+    const visible=Number.isFinite(measurement);
+    classification=visible?`Upper arm angle · ${Math.round(measurement)}°`:'Upper arm not visible';
+    detail='Camera estimates upper-arm angle; check that you performed the prompted direction.';
+    feedback=visible?'Angle visible · follow the prompt':'Show shoulder, elbow and hip';kind=visible?'uncertain':'mismatch';
+  }else if(target?.sensor==='prompt_only'){
+    feedback='Camera does not measure this motion';kind='uncertain';
+  }else if(target?.key==='rest'){
+    feedback=result.key==='fist'||result.key==='pinch'?'Does not look like rest':'Camera cannot verify rest';kind='uncertain';
+  }else if(target&&result.key==='unavailable'){feedback='Improve camera view';kind='uncertain';}
+  else if(target&&result.key===(target.cameraKey??target.key)){feedback='Looks like the prompted pose';kind='match';}
+  else if(target&&result.key==='partial'){feedback='No clear pose match yet';kind='uncertain';}
+  else if(target){feedback='Does not match prompt';kind='mismatch';}
+  $('camera-target').textContent=targetLabel;
+  $('camera-classification').textContent=classification;
+  $('camera-classification-detail').textContent=detail;
+  $('camera-feedback').textContent=feedback;
+  $('camera-feedback').dataset.state=kind;
+  const cameraAvailable=target?.sensor==='elbow'||target?.sensor==='shoulder'?Number.isFinite(measurement):result.key!=='unavailable';
+  $('camera-read-state').textContent=target?.sensor==='prompt_only'?'PROMPT ONLY':cameraAvailable?'LIVE':'CHECK VIEW';
+  $('camera-read-state').classList.toggle('live',cameraAvailable);
+  const signature=`${target?.key??'preview'}:${phase}:${classification}:${result.key}:${kind}`;
+  if(signature===lastCameraFeedKey)return;
+  lastCameraFeedKey=signature;
+  const item=document.createElement('li');item.dataset.state=kind;
+  item.textContent=`${cameraElapsedLabel(frame.t_ms)} · ${classification}${target?` · prompt: ${target.key}`:''} · ${feedback}`;
+  $('camera-class-log').prepend(item);
+  while($('camera-class-log').children.length>5)$('camera-class-log').lastElementChild.remove();
+  timedEvent(frame.t_ms,'camera_gesture_estimate',{trial_id:trialProtocol.active?trialProtocol.trialId:null,
+    target_class:target?.key??null,camera_class:result.key,feedback:kind,detail,measurement_name:target?.sensor??null,
+    measurement_value:Number.isFinite(measurement)?measurement:null,pinch_ratio:result.pinch_ratio??null});
+}
 function updateControls() {
   settings.forEach(id=>$(id).disabled=running||!!sessionId);
   ['participant','split','delay','hand'].forEach(id=>$(id).disabled=!!sessionId);
@@ -75,6 +148,15 @@ function updateControls() {
   $('import-placement').disabled=!!sessionId||!storageReady;
   if(sessionId) $('open-cal').disabled=$('closed-cal').disabled=true;
   $('allow-unlabeled').disabled=!!sessionId || startingRecording;
+  $('protocol-start').disabled=!recording||trialProtocol.active||!!pairReadiness();
+  $('protocol-stop').hidden=!trialProtocol.active;
+  $('trial-accept').hidden=trialProtocol.phase!=='review';
+  $('trial-retry').hidden=trialProtocol.phase!=='review';
+  const promptOnly=trialProtocol.current?.gesture.labelSource==='participant_prompt';
+  $('trial-uncertain').hidden=trialProtocol.phase!=='review'||promptOnly;
+  $('trial-accept').textContent=promptOnly?'Performed prompt · accept':'Prompt and visual check clear · accept';
+  for(const input of [$('trial-pair'),$('trial-repetitions'),$('trial-hold'),$('trial-rest')]) input.disabled=trialProtocol.active;
+  $('protocol-state').textContent=trialProtocol.active?trialProtocol.phase.toUpperCase():recording?'READY · RECORDING':'READY';
   $('record').disabled=!running&&!sessionId;
   updateRecordingReadiness(performance.now());
   $('record').innerHTML=sessionId?(recording?'■ Finish & save recording':'Retry save & finish'):'<span>●</span> Start recording';
@@ -194,6 +276,7 @@ function acceptVision(frame) {
   latestVision=frame;frameCount++;if(frame.valid)validFrames++;
   if(recording) pending.vision.push(frame);
   if(cameraStream && $('source').value!=='synthetic') {
+    updateCameraGestureFeed(frame,classifyHandGesture(frame));
     const labels=movementTracker.classify(frame);
     reportMovement(frame.t_ms,labels);
     $('hand-measure').textContent=frame.valid
@@ -208,8 +291,8 @@ function acceptVision(frame) {
 }
 function handleVision(data) {
   frameBusy=false;
-  if(data.type==='ready') {cameraReady=true;$('vision-status').textContent='Hand + arm trackers ready. Keep your shoulder, elbow, wrist and fingers in view.';return;}
-  if(data.type==='error') {notice(`Video tracker: ${data.message}`,true);cameraReady=false;return;}
+  if(data.type==='ready') {cameraReady=true;$('vision-status').textContent='Hand + arm trackers ready. Keep your shoulder, elbow, wrist and fingers in view.';updateControls();return;}
+  if(data.type==='error') {notice(`Video tracker: ${data.message}`,true);cameraReady=false;updateControls();return;}
   if(data.type!=='result')return;
   const arm=armMeasurement(data.pose_landmarks,data.pose_world,$('hand').value);
   const matches=data.handedness.map((h,i)=>({h:h[0],i})).filter(({h})=>h.categoryName===$('hand').value);
@@ -235,7 +318,7 @@ function handleVision(data) {
   const flexion=reason==='ok'?calibratedFlexion(angles,calibration):null;
   if(reason==='ok'&&!flexion)reason='open / closed calibration needed';
   const valid=reason==='ok';
-  acceptVision({t_ms:data.t_ms,processed_ms:performance.now(),media_time_s:data.media_time_s,valid,reason,
+  acceptVision({t_ms:data.t_ms,processed_ms:performance.now(),media_time_s:data.media_time_s,aspect_ratio:$('video').videoWidth/($('video').videoHeight||480),valid,reason,
     flexion,angles,landmarks,world_landmarks:world,handedness_score:score,arm});
   $('vision-pill').textContent=valid?'TRACKING':'CHECK LABEL';$('vision-pill').classList.toggle('live',valid);
   $('vision-status').textContent=valid?`Calibrated visual label · ${skippedFrames} frames skipped while tracker was busy`:`Label unavailable: ${reason}`;
@@ -263,6 +346,11 @@ function resetCameraMotion() {
 }
 async function stopCamera() {
   resetCameraMotion();
+  lastCameraFeedKey='';
+  $('camera-read-state').textContent='WAITING';$('camera-read-state').classList.remove('live');
+  $('camera-classification').textContent='Camera off';$('camera-classification-detail').textContent='Enable the camera to see pose estimates.';
+  $('camera-feedback').textContent='Preview only';$('camera-feedback').dataset.state='preview';
+  $('camera-target').textContent='No active trial';
   calibration={open:null,closed:null};
   angleHistory=[];previousAngles=null;
   if(frameHandle) $('video').cancelVideoFrameCallback?.(frameHandle);
@@ -273,6 +361,7 @@ async function stopCamera() {
   $('arm-status').textContent='Camera off. Keep shoulder, elbow and wrist in view when enabled.';
   $('video').srcObject=null;$('camera-empty').hidden=false;$('camera').textContent='Enable camera';
   $('vision-pill').textContent='OFFLINE';
+  updateControls();
   $('open-cal').disabled=$('closed-cal').disabled=true;
 }
 $('camera').onclick=async()=>{
@@ -284,6 +373,7 @@ $('camera').onclick=async()=>{
     calibration={open:null,closed:null};angleHistory=[];previousAngles=null;skippedFrames=0;
     $('open-cal').textContent='Capture open hand';$('closed-cal').textContent='Capture closed hand';
     $('camera-empty').hidden=true;$('camera').textContent='Disable camera';
+    $('camera-class-log').replaceChildren();lastCameraFeedKey='';
     $('vision-status').textContent='Loading local hand and arm trackers…';
     worker=new Worker('/assets/vision-worker.js?v=4');
     worker.onmessage=({data})=>handleVision(data);
@@ -291,10 +381,10 @@ $('camera').onclick=async()=>{
     worker.postMessage({type:'init'});
     if($('video').requestVideoFrameCallback)frameHandle=$('video').requestVideoFrameCallback(sendCameraFrame);
     else frameFallback=setInterval(()=>sendCameraFrame(performance.now()),34);
-    event('camera_started');
+    event('camera_started');updateControls();
   }catch(e){await stopCamera();notice(`Camera: ${e.message}`,true);}
 };
-$('hand').onchange=()=>{resetCameraMotion();calibration={open:null,closed:null};angleHistory=[];previousAngles=null;latestVision=null;drawHand(null);$('elbow-angle').textContent=$('shoulder-angle').textContent='—';notice('Side selection changed. Capture both hand calibration poses again.');};
+$('hand').onchange=()=>{resetCameraMotion();calibration={open:null,closed:null};angleHistory=[];previousAngles=null;latestVision=null;drawHand(null);$('elbow-angle').textContent=$('shoulder-angle').textContent='—';notice('Side selection changed. Capture both hand calibration poses again.');updateControls();};
 for(const pose of ['open','closed']) $(pose+'-cal').onclick=()=>{
   const rows=angleHistory.filter(x=>performance.now()-x.t<1200);
   if(rows.length<10||rows.at(-1).t-rows[0].t<400){notice('Keep the full hand visible and hold the pose steady for one second.',true);return;}
@@ -303,6 +393,7 @@ for(const pose of ['open','closed']) $(pose+'-cal').onclick=()=>{
   calibration[pose]=center;latestVision=null;resetCameraMotion();$(pose+'-cal').textContent=pose==='open'?'Open pose captured ✓':'Closed pose captured ✓';
   if(calibration.open&&calibration.closed&&!calibratedFlexion(center,calibration))notice('Open-to-closed range is too small for one or more fingers. Re-capture both poses with all fingertips visible.',true);
   else notice(`${pose==='open'?'Open':'Closed'} pose captured. ${calibration.open&&calibration.closed?'Visual labels are calibrated.':'Capture the other pose next.'}`);
+  updateControls();
 };
 
 async function flush() {
@@ -322,6 +413,7 @@ async function flush() {
 setInterval(()=>{if(recording)flush().catch(()=>{});},200);
 
 async function finishRecording() {
+  stopTrialProtocol('recording_finished');
   event('recording_stopped');recording=false;$('record').disabled=true;
   try{
     if(saving)await saving;
@@ -359,7 +451,127 @@ $('record').onclick=async()=>{
 };
 window.addEventListener('beforeunload',e=>{if(sessionId){e.preventDefault();e.returnValue='';}});
 document.addEventListener('visibilitychange',()=>event('page_visibility',{state:document.visibilityState}));
-$('prompts').onclick=()=>{prompting=!prompting;promptStarted=performance.now();lastCue=-1;$('prompts').textContent=prompting?'Stop prompts':'Start prompts';if(!prompting){$('cue').textContent='Move freely, or follow a cue';$('cue-progress').firstElementChild.style.width='0';event('prompts_stopped');}};
+
+function shuffledTrials(classes,repetitions) {
+  const queue=[];
+  for(const gesture of classes) for(let repetition=1;repetition<=repetitions;repetition++) queue.push({gesture,repetition});
+  for(let i=queue.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[queue[i],queue[j]]=[queue[j],queue[i]];}
+  for(let i=1;i<queue.length;i++) if(queue[i].gesture.key===queue[i-1].gesture.key){
+    const swap=queue.findIndex((row,j)=>j>i&&row.gesture.key!==queue[i-1].gesture.key&&row.gesture.key!==queue[i].gesture.key);
+    if(swap>i)[queue[i],queue[swap]]=[queue[swap],queue[i]];
+  }
+  return queue;
+}
+function beginGestureTrial(now) {
+  if(trialProtocol.index>=trialProtocol.queue.length){
+    trialProtocol.active=false;trialProtocol.phase='complete';
+    timedEvent(now,'gesture_protocol_completed',{trials:trialProtocol.queue.length,accepted:trialProtocol.accepted,excluded:trialProtocol.excluded});
+    $('trial-instruction').textContent='Trial set complete';
+    $('trial-count').textContent=`${trialProtocol.queue.length} trials · accepted ${trialProtocol.accepted} · excluded ${trialProtocol.excluded}`;
+    $('trial-stage').textContent='Start another set or finish and save this recording.';
+    $('protocol-help').textContent='Finished. The archive contains EMG, selected prompt labels, available camera measurements, and your per-trial quality decisions.';
+    updateControls();return;
+  }
+  const item=trialProtocol.queue[trialProtocol.index];
+  trialProtocol.current=item;trialProtocol.phase='prepare';trialProtocol.phaseStarted=now;
+  trialProtocol.trialId=crypto.randomUUID();trialProtocol.trialNumber=trialProtocol.index+1;
+  timedEvent(now,'gesture_trial_prompt',{trial_id:trialProtocol.trialId,class_id:item.gesture.id,class_name:item.gesture.key,
+    pair_key:selectedPair().key,pair_label:selectedPair().label,
+    repetition:item.repetition,trial_number:trialProtocol.trialNumber,total_trials:trialProtocol.queue.length,
+    instruction:item.gesture.label,description:item.gesture.detail,label_source:item.gesture.labelSource,
+    camera_measurement:item.gesture.sensor,split:$('split').value});
+  $('trial-instruction').textContent=item.gesture.label;
+  $('trial-stage').textContent=item.gesture.detail;
+  $('trial-count').textContent=`Trial ${trialProtocol.trialNumber} of ${trialProtocol.queue.length} · rep ${item.repetition} · accepted ${trialProtocol.accepted} · excluded ${trialProtocol.excluded}`;
+  updateControls();
+}
+function startGestureTrials() {
+  if(!recording){notice('Start and save a recording before starting guided trials.',true);return;}
+  const pair=selectedPair(),selected=pair.gestures,readiness=pairReadiness(pair);
+  if(readiness){notice(readiness,true);return;}
+  const repetitions=Math.max(2,Math.min(40,Number($('trial-repetitions').value)||12));
+  $('trial-repetitions').value=repetitions;
+  trialProtocol={active:true,queue:shuffledTrials(selected,repetitions),index:0,phase:'prepare',phaseStarted:performance.now(),
+    current:null,trialId:null,holdMs:Math.max(1,Math.min(5,Number($('trial-hold').value)||2))*1000,
+    restMs:Math.max(1,Math.min(6,Number($('trial-rest').value)||2))*1000,trialNumber:0,accepted:0,excluded:0};
+  $('trial-hold').value=trialProtocol.holdMs/1000;$('trial-rest').value=trialProtocol.restMs/1000;
+  timedEvent(performance.now(),'gesture_protocol_started',{pair_key:pair.key,pair_label:pair.label,
+    classes:selected.map(g=>({id:g.id,name:g.key})),repetitions_per_class:repetitions,
+    hold_ms:trialProtocol.holdMs,rest_ms:trialProtocol.restMs,order:trialProtocol.queue.map(x=>({class_name:x.gesture.key,repetition:x.repetition})),
+    split:$('split').value,label_sources:Object.fromEntries(selected.map(g=>[g.key,g.labelSource])),
+    camera_measurements:Object.fromEntries(selected.map(g=>[g.key,g.sensor])),
+    labels_are_camera_checked:selected.every(g=>g.labelSource!=='participant_prompt')});
+  $('protocol-help').textContent=selected.some(g=>g.labelSource==='participant_prompt')
+    ?'These forearm/wrist trials are labeled from your prompt and confirmation; the camera does not measure that motion. Accept only if you performed the movement as instructed.'
+    :'Both directions will be prompted with balanced repetitions. Keep the relevant body part visible and accept only trials performed correctly with a clear camera measurement.';
+  beginGestureTrial(performance.now());updateControls();
+}
+function reviewGestureTrial(outcome) {
+  if(!trialProtocol.active||trialProtocol.phase!=='review')return;
+  const now=performance.now(),item=trialProtocol.current;
+  const accepted=outcome==='accepted';
+  timedEvent(now,'gesture_trial_review',{trial_id:trialProtocol.trialId,class_id:item.gesture.id,class_name:item.gesture.key,
+    repetition:item.repetition,outcome,performed_as_prompted:outcome!=='incorrect',
+    camera_clear:item.gesture.labelSource==='participant_prompt'?null:outcome==='accepted'?true:outcome==='camera_unclear'?false:null,
+    label_source:item.gesture.labelSource,reviewer:'participant'});
+  if(accepted)trialProtocol.accepted++;else trialProtocol.excluded++;
+  $('trial-count').textContent=`Trial ${trialProtocol.trialNumber} of ${trialProtocol.queue.length} · rep ${item.repetition} · accepted ${trialProtocol.accepted} · excluded ${trialProtocol.excluded}`;
+  $('trial-stage').textContent=accepted
+    ?item.gesture.labelSource==='participant_prompt'?'Accepted · you confirmed the prompted movement':'Accepted · you checked the prompt and camera measurement'
+    :outcome==='incorrect'?'Excluded · prompt not followed; raw signal remains saved':'Excluded · camera unclear; raw signal remains saved';
+  trialProtocol.phase='rest';trialProtocol.phaseStarted=now;updateControls();
+}
+function stopTrialProtocol(reason='stopped_by_user') {
+  if(!trialProtocol.active)return;
+  const now=performance.now();
+  if(trialProtocol.phase==='active'&&trialProtocol.current) timedEvent(now,'gesture_trial_end',{trial_id:trialProtocol.trialId,
+    class_name:trialProtocol.current.gesture.key,early:true,reason});
+  timedEvent(now,'gesture_protocol_stopped',{reason,completed_trials:trialProtocol.index,accepted:trialProtocol.accepted,excluded:trialProtocol.excluded});
+  trialProtocol.active=false;trialProtocol.phase='stopped';$('trial-instruction').textContent='Trial set stopped';
+  $('trial-stage').textContent='Finish and save the recording, or start a new trial set.';updateControls();
+}
+function updateGestureTrials(now) {
+  if(!trialProtocol.active)return;
+  if(!recording){stopTrialProtocol('recording_paused');return;}
+  $('protocol-state').textContent=trialProtocol.phase.toUpperCase();
+  const elapsed=now-trialProtocol.phaseStarted;
+  const item=trialProtocol.current;
+  if(trialProtocol.phase==='prepare'){
+    $('trial-stage').textContent=`Get ready · ${item.gesture.detail}`;$('trial-progress-fill').style.width=`${Math.min(100,elapsed/10)}%`;
+    if(elapsed>=1000){trialProtocol.phase='active';trialProtocol.phaseStarted=now;
+      timedEvent(now,'gesture_trial_start',{trial_id:trialProtocol.trialId,class_id:item.gesture.id,class_name:item.gesture.key,
+        repetition:item.repetition,hold_ms:trialProtocol.holdMs,source:'prompt'});}
+  }else if(trialProtocol.phase==='active'){
+    const fraction=Math.min(1,elapsed/trialProtocol.holdMs);
+    $('trial-stage').textContent=`Do now · ${item.gesture.detail} · ${(Math.max(0,trialProtocol.holdMs-elapsed)/1000).toFixed(1)} sec`;
+    $('trial-progress-fill').style.width=`${fraction*100}%`;
+    if(fraction>=1){timedEvent(now,'gesture_trial_end',{trial_id:trialProtocol.trialId,class_name:item.gesture.key,early:false});
+      trialProtocol.phase='review';trialProtocol.phaseStarted=now;$('trial-stage').textContent=item.gesture.labelSource==='participant_prompt'
+        ?'Did you perform the movement as instructed?':'Did you perform it correctly, and was the camera measurement clear?';updateControls();}
+  }else if(trialProtocol.phase==='review'){
+    $('trial-progress-fill').style.width='100%';
+  }else if(trialProtocol.phase==='rest'){
+    $('trial-stage').textContent=`Rest · ${(Math.max(0,trialProtocol.restMs-elapsed)/1000).toFixed(1)} sec`;
+    $('trial-progress-fill').style.width=`${Math.min(100,elapsed/trialProtocol.restMs*100)}%`;
+    if(elapsed>=trialProtocol.restMs){trialProtocol.index++;beginGestureTrial(now);}
+  }
+}
+$('protocol-start').onclick=startGestureTrials;
+$('trial-pair').onchange=()=>{
+  const pair=selectedPair(),first=pair.gestures[0],second=pair.gestures[1];
+  const cameraNote=pair.gestures.some(g=>g.labelSource==='participant_prompt')
+    ?'Camera cannot measure one or both directions; confirm those prompts yourself.'
+    :'Camera measurements are saved separately for each direction.';
+  $('trial-pair-cue').textContent=`The app will alternate these prompts, with equal repetitions: ${first.label} ${first.detail} Then ${second.label} ${second.detail} ${cameraNote}`;
+  $('trial-instruction').textContent=pair.label;
+  $('trial-stage').textContent=`${first.detail} Then ${second.detail}`;
+  updateControls();
+};
+$('trial-pair').dispatchEvent(new Event('change'));
+$('protocol-stop').onclick=()=>stopTrialProtocol();
+$('trial-accept').onclick=()=>reviewGestureTrial('accepted');
+$('trial-retry').onclick=()=>reviewGestureTrial('incorrect');
+$('trial-uncertain').onclick=()=>reviewGestureTrial('camera_unclear');
 
 async function refreshSessions(){
   const rows=await api('/api/sessions');$('session-list').replaceChildren();
@@ -370,25 +582,7 @@ async function refreshSessions(){
     const placement=row.recording_kind==='placement';
     const small=document.createElement('small');small.textContent=placement?`Placement · ${row.placement?.movement??'trial'} · ${row.config.active_channels} active channels`:new Date(row.created_utc).toLocaleString();identity.append(small);div.append(identity);
     for(const text of [`${row.config.source==='synthetic'?'Synthetic':'Cyton'} · ${row.config.sample_rate_hz} Hz`,`${placement?'CUE LABELS':row.config.split.toUpperCase()} · ${row.status}`,`${row.counts.emg.toLocaleString()} samples`]){const el=document.createElement('span');el.textContent=text;if(text.startsWith('Synthetic'))el.className='synthetic';div.append(el);}
-    const a=document.createElement('a');a.textContent=row.status==='recording'?'Recording…':'Download ZIP ↗';if(row.status!=='recording')a.href=`/api/sessions/${row.id}/export`;div.append(a);
-    if (!placement && row.status === 'complete') {
-      for (const source of ['vision', 'emg']) {
-        const button=document.createElement('button');
-        button.textContent=source === 'vision' ? 'Finger labels CSV' : 'EMG predictions CSV';
-        button.onclick=async()=>{
-          try {
-            const response=await fetch(`/api/sessions/${row.id}/motion/${source}.csv`);
-            if(!response.ok) throw new Error((await response.json()).detail);
-            const url=URL.createObjectURL(await response.blob());
-            const download=document.createElement('a');
-            download.href=url; download.download=`${row.id}-${row.config.source}-${source}.csv`;
-            download.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
-          } catch(error) { notice(error.message,true); }
-        };
-        div.append(button);
-      }
-    }
-    $('session-list').append(div);
+    const a=document.createElement('a');a.textContent=row.status==='recording'?'Recording…':'Download ZIP ↗';if(row.status!=='recording')a.href=`/api/sessions/${row.id}/export`;div.append(a);$('session-list').append(div);
   }
 }
 $('refresh').onclick=()=>refreshSessions().catch(e=>notice(e.message,true));
@@ -470,13 +664,9 @@ async function updatePrediction(now){
   if(!$('predict').checked||predictionBusy||!running||now-lastSampleTime>250||now-lastPredictAt<100||filteredWindow.length!==profile.sample_rate_hz*.2)return;
   lastPredictAt=now;predictionBusy=true;
   const segment=processor.segment, predictionProcessor=processor;
-  const motionSession=recording ? sessionId : null, windowEnd=lastSampleTime;
   try{const result=await api('/api/predict',{method:'POST',body:JSON.stringify({sample_rate_hz:profile.sample_rate_hz,mains_hz:profile.mains_hz,wiring:$('wiring').value,filtered_uv:filteredWindow})});
     if(!running||processor!==predictionProcessor||processor.segment!==segment||performance.now()-lastSampleTime>250)return;
     prediction=result;
-    if (recording && sessionId === motionSession && $('predict').checked) {
-      event('decoder_motion', {t_ms:windowEnd, segment, flexion:result.flexion});
-    }
     $('model-status').textContent=`${prediction.training_source==='synthetic'?'Synthetic-trained demo · not validated on people':'Local CNN'} · predicts visual flexion ${prediction.label_delay_ms>=0?'+':''}${prediction.label_delay_ms} ms from window end`;
   }catch(e){$('predict').checked=false;$('model-status').textContent=e.message;prediction=null;}
   finally{predictionBusy=false;}
@@ -493,6 +683,7 @@ function draw(now){
   if($('cal-progress-text').textContent!==status) $('cal-progress-text').textContent=status;
   drawSignal(now);
   if(latestVision&&now-latestVision.t_ms>=500&&cameraStream){
+    updateCameraGestureFeed({t_ms:now},{key:'unavailable',label:'No fresh camera frame',detail:'Check camera tracking'});
     resetCameraMotion();reportMovement(now,{hand:null,elbow:null,upper_arm:null});
     drawHand(null);$('elbow-angle').textContent=$('shoulder-angle').textContent='—';
     $('arm-status').textContent='Waiting for a fresh arm measurement…';
@@ -501,7 +692,7 @@ function draw(now){
   [...$('finger-bars').children].forEach((row,i)=>{const value=fresh?latestVision.flexion[i]:null;row.querySelector('.measured').style.width=`${(value??0)*100}%`;row.querySelector('.predicted').style.width=`${$('predict').checked&&prediction&&running&&now-lastSampleTime<250?prediction.flexion[i]*100:0}%`;row.querySelector('output').textContent=value===null?'—':`${Math.round(value*100)}%`;});
   if(now-lastStatsAt>=1000){$('pps').textContent=running?Math.round((sampleCount-lastStatsSamples)*1000/(now-lastStatsAt)):'—';lastStatsAt=now;lastStatsSamples=sampleCount;$('gaps').textContent=packetGaps;$('coverage').textContent=frameCount?`${Math.round(validFrames/frameCount*100)}%`:'—';}
   if(recording){const elapsed=Math.floor((now-recordedAt)/1000);$('elapsed').textContent=`${Math.floor(elapsed/60).toString().padStart(2,'0')}:${(elapsed%60).toString().padStart(2,'0')}`;}
-  if(prompting){const index=Math.floor((now-promptStarted)/6000)%cues.length;if(index!==lastCue){lastCue=index;$('cue').textContent=cues[index];event('cue',{text:cues[index],not_ground_truth:true});}$('cue-progress').firstElementChild.style.width=`${((now-promptStarted)%6000)/60}%`;}
+  updateGestureTrials(now);
   updatePrediction(now);requestAnimationFrame(draw);
 }
 try{
