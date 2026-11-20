@@ -1,5 +1,13 @@
 # EMG Arm
 
+## Start here
+
+This branch is an October 31 electrode-placement lab and RoArm-M2-S simulator adaptation. It includes a six-channel right-arm experiment, a guided placement comparison workflow, and a 3D view based on the Waveshare arm's joint layout. It is a separate experiment from the default branch's arm model and from the newer camera-supervised research pipeline.
+
+**Quick path:** follow [Build & run](#build--run), then open `http://localhost:8080` in Chrome or Edge. The six-channel setup is available at `?session=six`; the expanded motion view is `?session=six&view=scene`. See [BRANCH_ACCOMPLISHMENTS.md](BRANCH_ACCOMPLISHMENTS.md) for the experiment's provenance, assumptions and validation notes.
+
+The placement locations are candidate sites, not validated recommendations. This branch's saved calibration and six-channel wiring assumptions are specific to this experiment; do not treat them as interchangeable with the default branch. For current data acquisition and CNN work, see [`codex/classification-and-camera-movements`](https://github.com/maxwellarmstrong/NCL_emg_control/tree/codex/classification-and-camera-movements).
+
 **October 31 placement-lab branch:** read [BRANCH_ACCOMPLISHMENTS.md](BRANCH_ACCOMPLISHMENTS.md) for the exact changes, upstream provenance, setup, validation, and next research steps.
 
 Drive a Waveshare RoArm-M2-S desktop arm, simulated and optionally the real one,
