@@ -1,5 +1,15 @@
 # EMG Arm
 
+## Start here
+
+This is the newest research branch. It contains the acquisition and camera-labeling tools, plus an experimental 1D CNN that predicts a prompted movement class and camera-measured motion amount from EMG windows.
+
+**Quick path:** follow [Install and run the acquisition app](#install-and-run-the-acquisition-app) to record data. To create and train the paired-movement model, follow [Gesture CNN experiment](gesture_cnn/README.md). Start with synthetic recordings only to check the data flow; use real, session-separated recordings for meaningful evaluation.
+
+**Important boundary:** the gesture CNN currently trains and predicts offline. Its output is not yet loaded into or used to control the live simulator. The model's camera targets are supervision labels, and its arm angles are monocular estimates. See [RESEARCH.md](RESEARCH.md) for recording limits and methodology.
+
+The earlier [`codex/research-acquisition`](https://github.com/maxwellarmstrong/NCL_emg_control/tree/codex/research-acquisition) branch contains the acquisition pipeline before the paired-gesture CNN additions. The separate [`feature/emg-placement-lab-2026-10-31`](https://github.com/maxwellarmstrong/NCL_emg_control/tree/feature/emg-placement-lab-2026-10-31) branch is a RoArm and electrode-placement experiment.
+
 ## Finger-decoding research workspace
 
 The research workspace adds a local acquisition app and a Python learning pipeline
