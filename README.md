@@ -1,5 +1,13 @@
 # EMG Arm
 
+## Start here
+
+This branch is the EMG data-collection and research pipeline. It adds a local web app for recording synchronized EMG, camera measurements and movement prompts, then tools for preparing datasets and training research models. It also keeps the original arm simulator available.
+
+**Quick path:** use [Install and run the acquisition app](#install-and-run-the-acquisition-app), choose **Synthetic demo** to try it without hardware, or connect the Cyton and camera to record a session. See [RESEARCH.md](RESEARCH.md) for the recording protocol and [Research code map](#research-code-map) for where each part lives.
+
+This branch is the foundation for the newer [`codex/classification-and-camera-movements`](https://github.com/maxwellarmstrong/NCL_emg_control/tree/codex/classification-and-camera-movements) branch, which adds paired movement labels and an experimental gesture CNN. That CNN is not connected to the live simulator. The separate [`feature/emg-placement-lab-2026-10-31`](https://github.com/maxwellarmstrong/NCL_emg_control/tree/feature/emg-placement-lab-2026-10-31) branch explores a different six-channel placement setup.
+
 ## Finger-decoding research workspace
 
 The research workspace adds a local acquisition app and a Python learning pipeline
