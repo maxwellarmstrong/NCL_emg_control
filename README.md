@@ -1,5 +1,17 @@
 # EMG Arm
 
+## Start here
+
+This is the default branch for the live EMG arm simulator. Use it to explore the 3D arm, try manual or simulated control, connect a Cyton board, calibrate, and work with the live-control workflow described below.
+
+**Quick path:** follow [Build & run](#build--run), then open `http://localhost:8080` in Chrome or Edge. Use **Simulate** to learn the controls without a board. Connect the Cyton only after the page is running.
+
+This branch focuses on the simulator. The other branches contain separate research work:
+
+- [`codex/research-acquisition`](https://github.com/maxwellarmstrong/NCL_emg_control/tree/codex/research-acquisition) adds local EMG + camera recording and a research data pipeline.
+- [`codex/classification-and-camera-movements`](https://github.com/maxwellarmstrong/NCL_emg_control/tree/codex/classification-and-camera-movements) builds on that pipeline and adds a paired-gesture CNN experiment. Its model is currently an offline experiment; it is not connected to live arm control.
+- [`feature/emg-placement-lab-2026-10-31`](https://github.com/maxwellarmstrong/NCL_emg_control/tree/feature/emg-placement-lab-2026-10-31) is a separate six-channel electrode-placement lab and RoArm-M2-S simulator adaptation.
+
 Drive a simulated 4-axis wall-mounted robot arm with forearm/upper-arm muscle
 signals from an OpenBCI Cyton. The arm sticks straight out of the wall. Its base
 is a two-axis gimbal: yaw (left/right), then pitch (up/down). After that come an
